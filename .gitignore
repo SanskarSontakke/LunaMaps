@@ -47,3 +47,7 @@ public/tiles/*
 !public/tiles/manifest.json
 public/cesium/
 .venv/
+
+# python caches produced by the pytest suite
+__pycache__/
+.pytest_cache/

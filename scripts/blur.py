@@ -17,6 +17,20 @@ def gauss1d(sigma: float, radius: int) -> np.ndarray:
 
 def blur_separable(a: np.ndarray, sigma: float = 2.5, radius: int = 8,
                    wrap_x: bool = True) -> np.ndarray:
+    """Separable Gaussian blur of a 2-D array, returning float32 of the same shape.
+
+    PRECONDITION: with the default `wrap_x=True`, this is correct only when `a`
+    spans the full 360 degrees of longitude, i.e. when its width equals
+    `grid.world_px_width(L)` for the level being baked. Only then are column 0
+    and column W-1 physical neighbours on the globe and the periodic pad the
+    right boundary condition.
+
+    Any narrower band -- a crop, a region, a single 512 px tile -- MUST pass
+    `wrap_x=False`. With the default it silently blends the opposite edge of
+    the same array into each seam column (at sigma=2.5, radius=8 an impulse on
+    column 0 puts 14.7% of its energy on column W-1) and nothing raises. The y
+    axis is edge-clamped either way: the poles are real boundaries.
+    """
     if a.ndim != 2:
         raise ValueError(f'blur_separable needs a 2-D array, got shape {a.shape}')
     k = gauss1d(sigma, radius)

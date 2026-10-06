@@ -51,3 +51,26 @@ def test_impulse_support_is_limited_to_the_radius_and_symmetric():
     assert out[16 + r + 1, 16] == 0.0
     assert np.allclose(out[16, 16 - r : 16 + r + 1], out[16, 16 + r : 16 - r - 1 : -1])
     assert out.sum() == pytest.approx(1.0, abs=1e-5)
+
+
+def test_full_width_precondition_a_narrow_band_must_opt_out_of_the_wrap():
+    """The wrap is only correct when W spans 360 degrees of longitude.
+
+    512 columns is exactly one tile, i.e. a sub-band crop, which is the misuse
+    case a per-tile baker (Task 7 / Task 11) can fall into. This pins both
+    halves of the precondition: wrap_x=False keeps the opposite column clean,
+    wrap_x=True silently leaks a kernel tap's worth of the first column.
+    """
+    a = np.zeros((9, 512), np.float32)  # one tile wide, not a full-width band
+    a[:, 0] = 1.0
+
+    cropped = blur_separable(a, 2.5, 8, wrap_x=False)
+    assert np.all(cropped[:, -1] == 0.0)
+    assert cropped[4, 0] > 0.0  # the impulse itself is still blurred in place
+
+    banded = blur_separable(a, 2.5, 8, wrap_x=True)
+    assert np.all(banded[:, -1] > 0.0)  # silent seam bleed, nothing raises
+    # the leak is exactly the offset-1 kernel tap: 14.7% of column 0's energy
+    offset_one_tap = float(gauss1d(2.5, 8)[8 + 1])
+    assert float(banded[4, -1]) == pytest.approx(offset_one_tap, rel=1e-6)
+    assert offset_one_tap > 0.14

@@ -57,3 +57,32 @@ def test_all_black_pixel_does_not_diverge():
     B = np.zeros((9, 9, 3), np.uint8)
     D = np.zeros((9, 9), np.uint8)
     assert np.array_equal(chroma_detail(B, D, k=0.4), B)
+
+
+def test_k_tiny_reproduces_the_base_through_the_algebra():
+    """The k -> 0 identity belongs to the algebra, not to the k == 0.0 guard.
+
+    1e-9 is not 0.0 and not None, so the short-circuit is not taken: every
+    pixel is rebuilt as rint(mean(B) * (1 + k * hpD / mean(D)) * (B / mean(B)))
+    from a genuinely non-flat detail field, and must still come back byte-exact.
+    """
+    B = rand_base(7)
+    D = np.random.default_rng(8).integers(0, 255, B.shape[:2]).astype(np.uint8)
+    assert not np.array_equal(chroma_detail(B, D, k=0.4), B)  # detail is non-flat
+    assert np.array_equal(chroma_detail(B, D, k=1e-9), B)
+
+
+def test_wrap_x_false_is_accepted_and_differs_on_a_narrow_band():
+    """A caller holding a crop, not a full-width band, must be able to opt out.
+
+    33 x 41 is far narrower than 360 degrees of longitude, so the default wrap
+    smuggles the first column's detail into the last one.
+    """
+    B = rand_base(9)
+    D = np.full(B.shape[:2], 128, np.uint8)
+    D[:, 0] = 12  # detail energy sitting right on the seam
+    banded = chroma_detail(B, D, k=0.4)  # default wrap_x=True
+    cropped = chroma_detail(B, D, k=0.4, wrap_x=False)
+    assert cropped.shape == B.shape and cropped.dtype == np.uint8
+    assert not np.array_equal(cropped, banded)
+    assert not np.array_equal(cropped[:, -1], banded[:, -1])  # the far edge moved
