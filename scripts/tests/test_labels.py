@@ -80,49 +80,90 @@ def test_shackleton_appears_when_the_diameter_cut_drops(records):
 
 
 def test_centre_is_inside_its_own_bbox_for_every_record(records):
-    """spec 5.1 check 1, over all 9,087 records at the strict 1e-6 tolerance.
+    """spec 5.1 check 1, reclassified as a PINNED-REGRESSION GUARD.
 
-    The tolerance is NOT loosened. The shipped USGS nightly export stores the
-    centre at coarser precision than the bbox, so 20/9,087 records miss a strict
-    1e-6 containment: 19 by <0.03 deg (12 astronaut-named LF features that ARE
-    curated, plus tiny non-curated ones; Brill records its bbox lon in +/-180
-    while the centre is 0-360) and one genuine sign error, Statio Tianhe (centre
-    -45.45 vs bbox +45.45, 90.9 deg). main()'s strict guard therefore returns
-    nonzero on this file -- the guard working, not a code bug. We pin the exact
-    offending set so any NEW geometry defect fails loudly, and the invariant
-    holds for the other 9,067 records."""
-    TOL = 1e-6
-    KNOWN_DEFECTS = {
-        'Mons Agnes', 'Jaci', 'Masina', 'Brill', 'Middle Crescent', 'Surveyor',
-        'Flank', 'Bench', 'Block', 'Weird', 'Head', 'Halo', 'Little West',
-        'Double', 'Statio Tianhe', 'Doublet', 'Nansen-Apollo', 'Lev', 'Ballet',
-        'Statio Tianchuan',
-    }
+    The 1e-6 tolerance is NOT loosened and the pinned set is NOT a tolerance:
+    `labels.KNOWN_BBOX_DEFECTS` is a literal, reviewable list, and it lives in
+    the pipeline so guard and test cannot drift (the containment logic used to
+    be re-implemented here -- it now comes from the single `bbox_defects()`
+    helper that `main()` runs).
 
-    def _wl(v):
-        v = float(v) % 360.0
-        return v - 360.0 if v > 180.0 else v
-
-    def off_by(r):
-        dlat = max(r['min_lat'] - r['center_lat'], r['center_lat'] - r['max_lat'], 0.0)
-        a, b, c = _wl(r['min_lon']), _wl(r['max_lon']), _wl(r['center_lon'])
-        dlon = max(a - c, c - b, 0.0) if a <= b else 0.0  # antimeridian bbox: treat as inside
-        return max(dlat, dlon)
-
-    def inside(r):
-        lat_ok = r['min_lat'] - TOL <= r['center_lat'] <= r['max_lat'] + TOL
-        lon_ok = (r['min_lon'] - TOL <= r['center_lon'] <= r['max_lon'] + TOL
-                  or r['min_lon'] - 360.0 <= r['center_lon'] <= r['max_lon'] - 360.0)
-        return lat_ok and lon_ok
-
-    offenders = {r['name'] for r in records if not inside(r)}
-    assert offenders == KNOWN_DEFECTS, offenders ^ KNOWN_DEFECTS
+    The shipped USGS nightly export genuinely carries 20 records whose centre
+    cannot be trusted against its own bbox: 19 sub-half-degree centre/bbox
+    precision mismatches (12 of them curated tier-3 traverse features) and
+    `Brill`, whose bbox is stored +/-180 while its centre is 0-360. Comparing in
+    one wrapped frame resolves Brill, so `bbox_defects()` reports 19 and the
+    pinned 20 = those 19 + Brill. Every one of them ships `bbox = null`.
+    """
+    defects = labels.bbox_defects(records)
+    assert set(defects) == set(labels.KNOWN_BBOX_DEFECTS) - {'Brill'}, \
+        set(defects) ^ set(labels.KNOWN_BBOX_DEFECTS)
+    assert len(labels.KNOWN_BBOX_DEFECTS) == 20
+    # main()'s guard condition: nothing outside the pinned list, so it exits 0.
+    assert set(defects) - set(labels.KNOWN_BBOX_DEFECTS) == set()
+    # ...and no pinned name is a phantom that can silently stop matching.
+    assert set(labels.KNOWN_BBOX_DEFECTS) <= {r['name'] for r in records}
     # Pin the separation: every defect is sub-half-degree gazetteer rounding
     # EXCEPT Statio Tianhe, whose 90.9 deg centre is a genuine sign error.
-    by_name = {r['name']: r for r in records}
-    devs = {n: off_by(by_name[n]) for n in offenders}
-    assert devs['Statio Tianhe'] > 45.0
-    assert all(d < 0.5 for n, d in devs.items() if n != 'Statio Tianhe')
+    assert defects['Statio Tianhe'] == pytest.approx(90.9, abs=1e-3)
+    assert all(d < 0.5 for n, d in defects.items() if n != 'Statio Tianhe')
+    # the 12 curated ones are exactly the astronaut-named traverse features
+    curated = {r['name'] for r in labels.curate(records)}
+    assert {n for n in defects if n in curated} == {
+        'Bench', 'Block', 'Double', 'Doublet', 'Flank', 'Halo', 'Head',
+        'Little West', 'Middle Crescent', 'Nansen-Apollo', 'Surveyor', 'Weird'}
+
+
+def test_brill_is_a_longitude_convention_artefact_not_a_geometry_defect(records):
+    """C1: compare in one wrapped frame so `Brill` is not reported as bad geometry."""
+    b = next(r for r in records if r['name'] == 'Brill')
+    assert not (b['min_lon'] - 1e-6 <= b['center_lon'] <= b['max_lon'] + 1e-6)
+    assert 'Brill' not in labels.bbox_defects(records)
+    assert labels.bbox_contains([labels.wrap_lon(b['min_lon']), b['min_lat'],
+                                 labels.wrap_lon(b['max_lon']), b['max_lat']],
+                                labels.wrap_lon(b['center_lon']), b['center_lat'])
+
+
+def test_bbox_contains_honours_the_wrap_convention():
+    """I2: the one containment helper downstream gates must use (Task 9 proof)."""
+    seam = [170.0, -10.0, -170.0, 10.0]      # west > east -> crosses +180/-180
+    assert labels.bbox_contains(seam, 179.0, 0.0)
+    assert labels.bbox_contains(seam, -179.0, 0.0)
+    assert not labels.bbox_contains(seam, 0.0, 0.0)      # the middle is outside
+    assert not labels.bbox_contains(seam, 179.0, 20.0)   # latitude still binds
+    plain = [10.0, -10.0, 20.0, 10.0]
+    assert labels.bbox_contains(plain, 15.0, 0.0)
+    assert not labels.bbox_contains(plain, 25.0, 0.0)
+    assert not labels.bbox_contains(plain, 0.0, 0.0)
+    assert not labels.bbox_contains(None, 15.0, 0.0)     # null is never trusted
+    assert not labels.bbox_contains([], 15.0, 0.0)
+
+
+def test_pinned_records_ship_a_null_bbox_and_the_rest_contain_their_centre(records):
+    """I2: features.json carries its own bbox-integrity signal."""
+    feats = labels.to_features(labels.curate(records))
+    props = [f['properties'] for f in feats['features']]
+    nulled = [p for p in props if p['bbox'] is None]
+    pinned_curated = [p for p in props if p['name'] in labels.KNOWN_BBOX_DEFECTS]
+    assert len(nulled) == len(pinned_curated) == 12
+    assert {p['name'] for p in nulled} == {p['name'] for p in pinned_curated}
+    for f in feats['features']:
+        if f['properties']['bbox'] is None:
+            continue
+        lon, lat = f['geometry']['coordinates']
+        assert labels.bbox_contains(f['properties']['bbox'], lon, lat), \
+            f['properties']['name']
+    # west > east is the documented antimeridian convention, not a defect:
+    # exactly these 10 curated features cross it and must still contain their centre.
+    crossing = {p['name'] for p in props
+                if p['bbox'] is not None and p['bbox'][0] > p['bbox'][2]}
+    assert crossing == {'Plaskett', 'Rozhdestvenskiy', 'Von Kármán', 'Emden',
+                        'Larmor', 'Leeuwenhoek', 'Daedalus', 'Leibnitz',
+                        'Lipskiy', 'Minnaert'}
+    for f in feats['features']:
+        if f['properties']['name'] in crossing:
+            lon, lat = f['geometry']['coordinates']
+            assert labels.bbox_contains(f['properties']['bbox'], lon, lat)
 
 
 def test_budget_prunes_only_the_lowest_tier(records):
@@ -151,12 +192,14 @@ def test_there_are_no_landing_site_entries_and_the_heuristic_stays_out(records):
     by = {r['name']: r for r in labels.curate(records, return_stats=False)}
     assert 'Apollo 11' not in by and 'Luna 16' not in by
     assert by['Apollo']['code'] == 'AA' and by['Apollo']['tier'] != 3
-    # Chang Heng is a 42.7 km AA crater (named for a Chinese astronomer, not the
-    # mission) -- below the default 70 km floor, so it is not curated at all. Its
-    # tier is proven directly on the raw record: assign_tier never reaches the
-    # tier-3 branch, which is exactly the "heuristic stays out" claim.
-    chang = next(r for r in records if r['name'] == 'Chang Heng')
-    assert labels.assign_tier(chang, 70.0) != 3
+    # I3: prove the promotion is dead at a floor where the crater WOULD be
+    # labelled, not only at the default 70 km floor (where Chang Heng and
+    # Chang-Ngo are filtered out for size and a tier-3 claim would be vacuous).
+    for name in ('Chang Heng', 'Chang-Ngo', 'Apollo'):
+        rec = next(r for r in records if r['name'] == name)
+        assert rec['code'] == 'AA', name
+        assert labels.assign_tier(rec, 70.0) != 3, name
+        assert labels.assign_tier(rec, 15.0) != 3, name
     assert by['Surveyor']['tier'] == 3          # LF, named for the craft
 
 
@@ -181,3 +224,92 @@ def test_all_81_astronaut_named_features_survive_any_prune(records):
     assert all(r['tier'] == 2 for r in dropped)
     assert max(r['diameter'] or 0 for r in dropped) <= min(
         r['diameter'] or 0 for r in kept if r['tier'] == 2)
+
+
+def test_every_hardcoded_name_exists_in_the_gazetteer(records):
+    """I1: a name that is not in the DBF is a DEAD override, not a label.
+
+    'Mons Rumker' lived here for a whole review round while the gazetteer says
+    'Mons Rümker' (u-umlaut); because the MO branch needs >= 100 km and Rümker is
+    73.2 km, the feature vanished from the label set silently.
+    """
+    names = {r['name'] for r in records}
+    assert {*labels.TIER0_NAMES, *labels.TIER1_ALWAYS} <= names
+    assert 'Mons Rümker' in labels.TIER1_ALWAYS and 'Mons Rumker' not in names
+
+
+def test_tier1_overrides_are_live_and_land_in_tier_1(records):
+    """I1: per-name tier assertions, so an override can never match nothing again."""
+    by = {r['name']: r for r in labels.curate(records, budget=10_000)}
+    for name in sorted(labels.TIER1_ALWAYS):
+        assert name in by, f'{name} is a dead override: it is not curated at all'
+        assert by[name]['tier'] == 1, name
+    rumker = by['Mons Rümker']
+    assert rumker['code'] == 'MO'
+    assert rumker['diameter'] == pytest.approx(73.24858, abs=1e-3)
+
+
+def test_label_population_is_pinned_at_600_after_the_rümker_fix(records):
+    """I1 count shift, recorded not regretted: the live override adds one tier-1.
+
+    T1 133 -> 134, candidates 728 -> 729, pruned 128 -> 129, final 600 =
+    17/134/368/81. The budget and the tier rules are unchanged.
+    """
+    unpruned = labels.curate(records, 70.0, budget=10_000)
+    kept, stats = labels.curate(records, 70.0, budget=600, return_stats=True)
+    assert len(unpruned) == 729
+    assert stats['by_tier'] == {'0': 17, '1': 134, '2': 368, '3': 81}
+    assert stats['curated'] == len(kept) == 600
+    assert len(unpruned) - len(kept) == 129
+
+
+def test_mission_regex_keeps_every_documented_mission_family():
+    """M1: the Chang'e alternative lost its 'e' and silently stopped matching."""
+    ce = 'Chang\u2019e'          # U+2019, the way USGS writes the mission
+    for origin, want in (('Astronaut-named feature, Apollo 17 site.', 'Apollo 17'),
+                         ('Astronaut-named feature, Surveyor 3 site.', 'Surveyor 3'),
+                         ('Luna 16 landing site.', 'Luna 16'),
+                         (f'{ce} 4 landing site.', f'{ce} 4')):
+        assert labels.mission_of({'origin': origin}) == want
+    # the crater-name trap stays out: no mission in an astronomer's etymology
+    assert labels.mission_of({'origin': 'Named for Guo Shoujing.'}) is None
+    assert labels.mission_of({'origin': 'Astronaut-named feature, Apollo 11 site.'})\
+        == 'Apollo 11'
+
+
+def test_the_guard_still_fails_on_an_unpinned_defect():
+    """The pin is a regression guard, not a permission slip: a NEW offender must
+    reach main()'s `return 2` branch, and it must do so before any write."""
+    bogus = [{'name': 'Not In The Gazetteer', 'min_lon': 10.0, 'max_lon': 20.0,
+              'min_lat': 0.0, 'max_lat': 5.0, 'center_lon': 15.0, 'center_lat': 9.0}]
+    defects = labels.bbox_defects(bogus)
+    assert defects == {'Not In The Gazetteer': pytest.approx(4.0)}
+    assert set(defects) - set(labels.KNOWN_BBOX_DEFECTS) == {'Not In The Gazetteer'}
+
+
+def test_main_exits_zero_and_writes_the_task_artifact(monkeypatch):
+    """C1: the point of the task -- `npm run labels` exits 0 and emits features.json."""
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.chdir(root)
+    assert labels.main() == 0                       # the guard must not abort
+    out = root / 'public' / 'data' / 'features.json'
+    assert out.exists(), 'features.json is this task\'s primary artifact'
+    data = json.loads(out.read_text(encoding='utf-8'))
+    assert data['type'] == 'FeatureCollection'
+    assert len(data['features']) == 600
+    assert sum(1 for f in data['features']
+               if f['properties']['bbox'] is None) == 12
+
+
+def test_main_refuses_to_write_when_the_defect_set_grows(monkeypatch, tmp_path):
+    """Same guard, other branch: exit 2 and no artifact, on an unpinned offender."""
+    bogus = [{'name': 'Not In The Gazetteer', 'type': 'Crater, craters',
+              'code': 'LF', 'diameter': 10.0, 'origin': 'Astronaut-named feature.',
+              'center_lon': 15.0, 'center_lat': 9.0, 'min_lon': 10.0,
+              'max_lon': 20.0, 'min_lat': 0.0, 'max_lat': 5.0, 'approvaldt': '',
+              'quad_code': '', 'link': ''}]
+    monkeypatch.setattr(labels, 'load_records', lambda zip_path: list(bogus))
+    monkeypatch.chdir(tmp_path)                      # cannot touch the repo output
+    assert labels.main() == 2
+    assert not (tmp_path / 'public' / 'data' / 'features.json').exists()
+

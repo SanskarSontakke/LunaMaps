@@ -51,3 +51,7 @@ public/cesium/
 # python caches produced by the pytest suite
 __pycache__/
 .pytest_cache/
+
+# the shapefile parts load_records() extracts from the tracked gazetteer zip;
+# regenerated on every pytest/labels run, never committed
+tests/fixtures/moon_nomenclature_fixture/
