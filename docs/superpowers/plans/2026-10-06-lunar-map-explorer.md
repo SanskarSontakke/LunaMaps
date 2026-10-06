@@ -23,7 +23,14 @@
 - **No new heavy dependencies:** no scipy, no OpenLayers, no search library, no `@types/cesium`.
 - **Never commit imagery:** `data/raw/`, `work/`, `public/tiles/**/*.jpg` are git-ignored. `public/tiles/manifest.json`, `public/data/features.json`, `test-vectors/grid.json` and the fixtures are committed.
 - **Python always runs as** `.venv/Scripts/python.exe -m pytest …` (Windows layout, Git Bash shell). Node 24 / npm 11 are on PATH.
-- **Attribution, verbatim in UI and README:** `NASA/GSFC/Arizona State University (LROC WAC mosaic) · NASA's Scientific Visualization Studio (CGI Moon Kit) · USGS Astrogeology Science Center · IAU Gazetteer of Planetary Nomenclature`.
+- **Attribution**: the credit string is defined exactly once, as the exported `CREDIT`
+  in `src/lib/cesium/moon.ts`, reading `NASA/GSFC/Arizona State University (LROC WAC
+  mosaic) · NASA’s Scientific Visualization Studio (CGI Moon Kit) · USGS Astrogeology
+  Science Center · IAU Gazetteer of Planetary Nomenclature` (typographic U+2019
+  apostrophe, deliberate). Any component or test needing the text MUST import
+  `CREDIT` — never retype a literal, because a one-codepoint difference between two
+  hand-typed copies is a false failure waiting to happen. The README may restate it
+  in prose.
 - **Gates are hard stops:** G1 (Task 2), G2 (Task 9), G3 (Task 18). A failed gate is diagnosed and reported with evidence; do not proceed past it, and never weaken an assertion to make it pass.
 
 ### Spec amendment A (this plan supersedes spec §3.1 Stage 2)
@@ -713,9 +720,10 @@ describe('TS grid matches the Python implementation', () => {
   it('bounds vectors', () => {
     for (const v of vecs.bounds) {
       const b = tileBounds(v.L, v.x, v.y);
-      expect([b.west, b.south, b.east, b.north]).toEqual(
-        expect.arrayContaining(v.bounds.map((n: number) => expect.closeTo(n, 8))),
-      );
+      const got = [b.west, b.south, b.east, b.north] as number[];
+      got.forEach((value, i) => {
+        expect(Math.abs(value - v.bounds[i])).toBeLessThan(1e-8);
+      });
     }
   });
   it('index vectors', () => {
