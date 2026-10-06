@@ -1,0 +1,31 @@
+{
+  "name": "1561f05e",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "postinstall": "node scripts/postinstall_cesium.mjs",
+    "fetch": ".venv/Scripts/python.exe scripts/fetch_data.py",
+    "bake": ".venv/Scripts/python.exe scripts/bake.py",
+    "labels": ".venv/Scripts/python.exe scripts/labels.py",
+    "proof": ".venv/Scripts/python.exe scripts/proof.py",
+    "test:js": "vitest run",
+    "test:py": ".venv/Scripts/python.exe -m pytest scripts/tests -q",
+    "test": "vitest run && .venv/Scripts/python.exe -m pytest scripts/tests -q"
+  },
+  "dependencies": {
+    "cesium": "^1.146.0",
+    "next": "15.5.27",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^5",
+    "vitest": "^4.1.11"
+  }
+}

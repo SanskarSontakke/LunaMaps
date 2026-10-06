@@ -1,0 +1,19 @@
+rasterio: 1.5.2
+bundled GDAL: 3.12.2
+osgeo.gdal available: False
+(no system GDAL bindings -> probing rasterio's bundled driver manager)
+
+== GDAL drivers requested (registration status) ==
+GTiff        registered=True  (GeoTIFF)
+JP2OpenJPEG  registered=True  (JPEG-2000 driver based on JP2OpenJPEG library)
+JP2KAK       registered=False
+JP2ECW       registered=False
+BMP          registered=True  (MS Windows Device Independent Bitmap)
+
+registered among requested: ['GTiff', 'JP2OpenJPEG', 'BMP']
+
+== rasterio-recognised file extensions ==
+jp2: ['j2k', 'jp2']
+tif: ['tif', 'tiff']
+bmp: ['bmp']
+total extensions recognised: 60

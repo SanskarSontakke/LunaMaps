@@ -2058,7 +2058,7 @@ def sources(tmp_path):
     """Detail: dark band straddling lon=+-180, bright elsewhere (a seam test).
     Colour: a warm flat tone with an alpha of 255."""
     yy, xx = np.mgrid[0:SRC_H, 0:SRC_W]
-    seam = (xx < SRC_W // 8) | (xx >= 7 * SRC_H // 8)
+    seam = (xx < SRC_W // 8) | (xx >= 7 * SRC_W // 8)
     detail = np.where(seam, 30, 200).astype(np.uint8)
     colour = np.dstack([
         np.full((SRC_H, SRC_W), 190, np.uint8),
@@ -3009,7 +3009,7 @@ export interface Probe {
 
 /** Three fetches that catch the usual mistakes: unbaked, wrong top level,
  *  and a broken antimeridian column. */
-export async function probeAssets(m: Manifest, canvasWidthPx: number): Promise<Probe[]> {
+export async function probeAssets(m: Manifest): Promise<Probe[]> {
   const top = layerTop(m, 'photo');
   const cols = 2 ** (top + 1);
   const paths = [
