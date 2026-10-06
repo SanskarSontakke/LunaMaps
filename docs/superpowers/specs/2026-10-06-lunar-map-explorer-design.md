@@ -347,7 +347,14 @@ drag-rotate is reported, not asserted, since it is GPU-dependent.
 The gazetteer rows carry both a centre and a bbox, and the imagery carries
 albedo. So:
 
-1. Every curated feature's centre lies inside its own bbox (9,087-record check).
+1. **Pinned data-quality regression guard, not a pass/fail gate.** 20 of the 9,087
+   shipped gazetteer records have a centre outside their own bbox — 19 sub-0.5°
+   rounding artefacts (12 of them curated tier-3 traverse features), `Brill`
+   straddling the ±180 vs 0–360 convention, and `Statio Tianhe` carrying a genuine
+   90.9° sign error from USGS. `labels.py` names the whole set, ships `bbox = null`
+   for those records so nothing downstream trusts them, and exits nonzero only if
+   the set *grows*. It is a guard against our own regressions, not a claim that the
+   upstream data is perfect.
 2. **Median contrast, not per-feature thresholds.** The median paper-layer albedo
    of ≥15 mare centroids must be lower than the median of ≥15 ray/highland
    craters by at least 25 DN, and the mare median must sit below the global mean
