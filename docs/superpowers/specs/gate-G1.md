@@ -1,7 +1,9 @@
 # Gate G1 — Cesium boot + geodetic `y` origin
 
 **Task:** 2 of 18 (`task-2-brief.md`)
-**Run by:** the Task 2 implementation agent, 2026-10-06
+**Run by:** the Task 2 implementation agent, 2026-10-06; re-verified in the Task 2 review
+fix round the same day (fixture rebuilt, render re-measured, `scripts/g1_tiling_probe.mjs`
+committed).
 **Verdict: G1 PASSES all four criteria.** Criteria 3 and 4 are proven twice (headless Node
 and a live browser page). Criteria 1 and 2 are proven with real rendered pixels plus a
 numeric camera/projection cross-check that makes the reading of those pixels
@@ -15,10 +17,10 @@ fixture could support):
   edge) and **screen-up = geographic north** for the default camera.
 - It also proves the **row order** — but only because the fixture was rebuilt in the fix
   round so that every tile's picture is a function of its own `(L, x, y)` (see "Step 2" and
-  "Why the L1 render discriminates row order"). The *original* fixture wrote the same
-  in-tile split for every x/y, so all 10 JPEGs were byte-identical and the render was
-  **y-order invariant**: swapping which row index is north produced exactly the same
-  picture.
+  "What the render proves — and what the original fixture could not"). The *original*
+  fixture wrote the same in-tile split for every x/y, so all 10 JPEGs were byte-identical
+  and the render was **y-order invariant**: swapping which row index is north produced
+  exactly the same picture.
 - The y-index convention itself rests on **criterion 3 alone**
   (`tileXYToRectangle(0, 0, 1).north === 90`), which is a direct read of the tiling scheme
   and does not depend on any image. The rebuilt fixture corroborates it visually; criterion
