@@ -89,16 +89,23 @@ Replace the `scripts` object in `package.json` with exactly:
     "build": "next build",
     "start": "next start",
     "postinstall": "node scripts/postinstall_cesium.mjs",
-    "fetch": ".venv/Scripts/python.exe scripts/fetch_data.py",
-    "bake": ".venv/Scripts/python.exe scripts/bake.py",
-    "labels": ".venv/Scripts/python.exe scripts/labels.py",
-    "proof": ".venv/Scripts/python.exe scripts/proof.py",
+    "fetch": ".venv\\\\Scripts\\\\python.exe scripts/fetch_data.py",
+    "bake": ".venv\\\\Scripts\\\\python.exe scripts/bake.py",
+    "labels": ".venv\\\\Scripts\\\\python.exe scripts/labels.py",
+    "proof": ".venv\\\\Scripts\\\\python.exe scripts/proof.py",
     "test:js": "vitest run",
-    "test:py": ".venv/Scripts/python.exe -m pytest scripts/tests -q",
-    "test": "vitest run && .venv/Scripts/python.exe -m pytest scripts/tests -q"
+    "test:py": ".venv\\\\Scripts\\\\python.exe -m pytest scripts/tests -q",
+    "test": "vitest run && .venv\\\\Scripts\\\\python.exe -m pytest scripts/tests -q"
   }
 }
 ```
+
+Windows caveat that decides this spelling: npm executes package.json scripts
+through `cmd.exe`, not your interactive Git Bash, so a forward-slash path like
+`.venv/Scripts/python.exe` fails with a "not recognized" error before Python
+starts. Backslashes are required in the script strings (written doubled here
+because this is JSON), and are irrelevant to how you invoke Python directly from
+Git Bash, which keeps using `.venv/Scripts/python.exe`.
 
 - [ ] **Step 5: Create the Python venv and install pipeline dependencies**
 
@@ -1300,19 +1307,18 @@ TIER2_MIN_LINE_KM = 100.0
 DROP_ORDER = {2: 0, 1: 1, 0: 2, 3: 3}
 MISSION_RE = re.compile(r'(Apollo \d+|Surveyor \d+|Luna \d+|Chang\u2019e \d+)')
 
-# USGS data-quality defects, pinned as of the 2026 nightly export. These 20
-# records have a centre that does not fall inside their own bbox: 19 are
-# sub-0.5-degree rounding artefacts (12 of them curated tier-3 traverse
-# features), 'Brill' straddles the +/-180 vs 0-360 convention, and
+# USGS data-quality defects, measured from the shipped 2026 export rather than
+# asserted here. These records have a centre that does not fall inside their own
+# bbox: most are sub-0.5-degree rounding artefacts (all curated ones are tier-3
+# traverse features), one straddles the +/-180 vs 0-360 convention, and
 # 'Statio Tianhe' carries a genuine 90.9-degree sign error upstream.
-# This list is the single source of truth for both the pipeline guard and the
-# test, so the two cannot drift.
+# KNOWN_BBOX_DEFECTS in scripts/labels.py is the single source of truth, pinned
+# by tests that assert (pinned set) is a subset of gazetteer names and
+# (measured defects) is a subset of the pinned set. This plan deliberately does
+# not restate the list: a hand-copied literal drifts, and it did.
 KNOWN_BBOX_DEFECTS = frozenset({
-    'Mons Agnes', 'Short', 'Taruntius A', 'Rook C', 'Barsoe', 'Snap',
-    'Liaison', 'Bican F', 'Chabac F', 'Nansen-Apollo', 'Doublet', 'Block',
-    'Weird', 'Halo', 'Head', 'Flank', 'Bench', 'Surveyor', 'Little West',
-    'Double', 'Statio Tianhe', 'Brill', 'Middle Crescent', 'West',
-    'Mount Marilyn',
+    # 20 names measured from the fixture; see task-5-report.md for the
+    # derivation and scripts/labels.py as the authoritative copy.
 })
 
 
@@ -1332,14 +1338,16 @@ def bbox_defects(records) -> dict[str, float]:
             out[r['name']] = 91.0
             continue
         lo, hi, c = r['min_lon'], r['max_lon'], r['center_lon']
+        # Compare the unshifted centre against each wrapped copy of the BOX.
+        # Shifting centre and box together is a no-op and finds nothing.
         for shift in (0.0, -360.0, 360.0):
-            if lo + shift - 1e-6 <= c + shift <= hi + shift + 1e-6:
+            if lo + shift - 1e-6 <= c <= hi + shift + 1e-6:
                 break
         else:
-            dev = min(abs(c - lo), abs(c - hi))
-            if lo > hi:  # box spans the seam; measure against the wrapped edge
-                dev = min(dev, abs(c - (lo - 360.0)), abs(c - (hi + 360.0)))
-            out[r['name']] = dev
+            out[r['name']] = min(abs(c - (lo + s)) for s in (0.0, -360.0, 360.0)
+                                 ) if lo > hi else min(
+                abs(c - lo), abs(c - hi),
+                abs(c - (lo - 360.0)), abs(c - (hi + 360.0)))
     return out
 
 
