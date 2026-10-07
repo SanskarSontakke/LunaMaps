@@ -283,3 +283,101 @@ main {
   margin: 4px 0 0;
   opacity: 0.65;
 }
+/* Task 15 — failure panels. Nothing here is decorative: the point of the task is
+   that a failed boot shows a readable panel instead of a blank canvas, so the
+   panel must cover the (empty) map host and stay legible over it. */
+.panel {
+  position: fixed;
+  inset: 0;
+  /* Above the (empty) map host and the `.ui` overlay, but *below* `.credit`
+     (z-index 2): provenance must survive every failure, including this panel. */
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #05060a;
+  color: #e8e8e8;
+  font: 13px/1.5 system-ui, sans-serif;
+}
+.panel-card {
+  max-width: 620px;
+  padding: 20px 24px;
+  border-radius: 10px;
+  background: rgba(12, 14, 20, 0.9);
+  border: 1px solid rgba(232, 232, 232, 0.14);
+}
+.panel-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+}
+.panel-sub {
+  margin: 14px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+.panel-hint {
+  margin: 0;
+  opacity: 0.9;
+}
+.panel-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+.panel-note {
+  margin: 12px 0 0;
+  font-size: 11px;
+  opacity: 0.65;
+}
+.panel-pre,
+.panel code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.panel-pre {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(232, 232, 232, 0.08);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.panel-more summary {
+  margin-top: 10px;
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0.7;
+}
+.panel-retry {
+  all: unset;
+  box-sizing: border-box;
+  margin-top: 16px;
+  padding: 7px 14px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+  font-size: 12px;
+}
+/* Steps 5/6 failed on a live map: a banner under the mode toggle, not a
+   screen-replacing panel. */
+.ctl-attach {
+  top: 54px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.ctl-tile-errors {
+  right: 14px;
+  bottom: 34px;
+  padding: 4px 8px;
+  font-size: 11px;
+  opacity: 0.85;
+}

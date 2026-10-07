@@ -14,7 +14,18 @@ import { attemptMode, createModeLatch } from '@/lib/cesium/modeLatch';
 import { attachPicking } from '@/lib/cesium/picking';
 import { measureMPerPx } from '@/lib/cesium/scaleProbe';
 import { attachLabels, type LabelSet } from '@/lib/labels/entities';
-import { layerTop, useManifest } from '@/lib/assets';
+import { layerTop, loadManifest, probeAssets } from '@/lib/assets';
+import {
+  bootFailure,
+  bootHint,
+  createTileErrorTally,
+  hasWebGL2,
+  runBoot,
+  type BootErrorState,
+  type BootState,
+} from '@/lib/diagnostics';
+import NoAssets from './NoAssets';
+import ErrorPanel from './ErrorPanel';
 import { fuzzySearch } from '@/lib/search';
 import { attachKeyboard } from '@/lib/keyboard';
 import { cameraHeightForLevel } from '@/lib/grid';
@@ -82,6 +93,13 @@ export interface MoonHarness {
    */
   hash(): string;
   flushHash(): string;
+  /**
+   * Task 15: how many REAL tile-load errors the live viewer has reported through
+   * `ImageryLayer.errorEvent`. The Task 18 sweep reads this instead of eyeballing
+   * the network log; it is always 0 on a healthy Tier A pyramid, and it is never a
+   * number this app made up.
+   */
+  tileErrors(): number;
 }
 
 // Cesium.SceneMode enum values as names (MORPHING=0 … SCENE3D=3), for readable
@@ -117,7 +135,41 @@ export default function MoonMap() {
   const pickedRef = useRef<Feature | null>(null);
   // The keyboard detach function, so a StrictMode double-mount attaches once.
   const keyboardRef = useRef<(() => void) | null>(null);
-  const { manifest, error } = useManifest();
+  // ---- Task 15: the boot state machine ------------------------------------
+  // `webgl` starts as null because `hasWebGL2()` needs a document: on the server
+  // (and on the client's first render, which must match it) the answer is simply
+  // not known yet. The boot effect waits for it instead of guessing.
+  const [webgl, setWebgl] = useState<boolean | null>(null);
+  // Every step that can fail, and what it renders instead of a blank canvas:
+  //   webgl / manifest / probe / viewer  -> a full-screen panel
+  //   labels / picking                   -> a retryable banner over a working map
+  // `booting` is the only pre-panel phase, so there is never an empty screen.
+  const [boot, setBoot] = useState<BootState>({ phase: 'booting' });
+  // A failed step must be RETRYABLE. Nothing latches: `bootNonce` is bumped by
+  // the panels' Try-again button, the boot effect re-runs on it, and it clears
+  // its own failure state at the top of each attempt. This is the rule Task 10
+  // round 1 broke (a stranded `requested` deduped every later attempt until
+  // reload) and round 2 fixed with `rollbackMode`; the same discipline applies
+  // here, so no failed step can leave a request that swallows the next click.
+  const [bootNonce, setBootNonce] = useState(0);
+  // Labels and picking attach *after* the map is already drawing, so a failure
+  // there is a banner on a live map, not a screen-replacing panel — and the same
+  // nonce-based retry, because `labelsRef`/`pickedRef` are only published once
+  // the attach actually succeeded.
+  const [attachError, setAttachError] = useState<
+    BootErrorState | null
+  >(null);
+  const [attachNonce, setAttachNonce] = useState(0);
+  // Real per-tile failure capture (design §4.4 "counted and logged"): every
+  // increment comes from a Cesium `ImageryLayer.errorEvent`, never from an
+  // estimate. See src/lib/diagnostics.ts.
+  const tileTally = useRef(createTileErrorTally());
+  const [tileErrors, setTileErrors] = useState(0);
+  // The manifest the *ready* boot produced, or null while booting/failed. Named
+  // `manifest` so every downstream consumer (viewer, layer effect, scale readout,
+  // attribution) reads the same value it always did — only its source is now the
+  // boot machine rather than an unretryable one-shot fetch.
+  const manifest = boot.phase === 'ready' ? boot.manifest : null;
   const [features, setFeatures] = useState<FeatureCollection | null>(null);
   // A ref mirror of the two pieces of late-arriving state the dev harness needs
   // (it is built once, when the viewer is created, long before `features`
@@ -290,6 +342,43 @@ export default function MoonMap() {
     setLayerState(v.layer);
   }, []);
 
+  // Step 1 of the boot order: can this browser give us a WebGL2 context at all?
+  // Deferred to an effect so the server render and the first client render agree
+  // (`webgl === null` means "not probed yet", not "no WebGL").
+  useEffect(() => {
+    setWebgl(hasWebGL2());
+  }, []);
+
+  // Steps 1–3 run inside `runBoot` (src/lib/diagnostics.ts), with the WebGL probe
+  // and the two asset calls injected, so the order and its routing are unit-tested
+  // without a browser. Only after it returns `ready` does the viewer effect below
+  // get a manifest to build with, so Cesium is never constructed over a pyramid
+  // that was not verified by the probe.
+  //
+  // Retryable: `bootNonce` is in the deps and the first thing every attempt does
+  // is clear the previous failure. Clicking Try again after a failed bake-less
+  // boot re-fetches; a success then falls through to `ready` and the map builds.
+  useEffect(() => {
+    if (webgl === null) return; // not probed yet (SSR / first paint)
+    let alive = true;
+    setBoot({ phase: 'booting' });
+    tileTally.current.reset();
+    setTileErrors(0);
+    void runBoot({
+      hasWebGL2: () => webgl === true,
+      loadManifest,
+      probeAssets,
+    }).then((state) => {
+      if (alive) setBoot(state);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [webgl, bootNonce]);
+
+  const retryBoot = useCallback(() => setBootNonce((n) => n + 1), []);
+  const retryAttach = useCallback(() => setAttachNonce((n) => n + 1), []);
+
   // The viewer is created only after the manifest has loaded and validated,
   // so `top` is real and a broken build fails in the panel below, not in a
   // half-rendered Cesium scene.
@@ -297,11 +386,22 @@ export default function MoonMap() {
     globalThis.CESIUM_BASE_URL = '/cesium';
     const host = hostRef.current;
     if (!host || !manifest || viewerRef.current) return;
-    const viewer = createMoonViewer(host, {
-      layer,
-      top: topOf(manifest, layer),
-      mode,
-    });
+    // Step 4 — the viewer itself. This is where a missing `public/cesium` shows
+    // up (Cesium's WorkerFactory / Resource loads throw), and where a GPU that
+    // vanished between the WebGL2 probe and context creation throws. The kind is
+    // classified from the real message, and `viewerRef` stays null so the retry
+    // can build again — a failed construction must not latch.
+    let viewer: Cesium.Viewer;
+    try {
+      viewer = createMoonViewer(host, {
+        layer,
+        top: topOf(manifest, layer),
+        mode,
+      });
+    } catch (e: unknown) {
+      setBoot(bootFailure('viewer', e));
+      return;
+    }
     appliedLayer.current = layer;
     modeLatch.current = createModeLatch(mode);
     setSceneMode(mode);
@@ -331,6 +431,38 @@ export default function MoonMap() {
     // until a frame is asked for (the same pump setLayer/setMode do).
     viewer.scene.requestRender();
     viewerRef.current = viewer;
+    // Design §4.4's "individual tile 404 at runtime" line, as REAL capture:
+    // Cesium 1.146 raises `ImageryLayer.errorEvent` with a TileProviderError
+    // carrying level/x/y, and every increment of the tally comes from one of
+    // those events (src/lib/diagnostics.ts). `setLayer` removes and re-adds
+    // imagery layers, so the subscription follows the collection through its
+    // `layerAdded` / `layerRemoved` events instead of watching only index 0. The
+    // count is always kept; the console log and the dev overlay only exist in
+    // development, and the log stops after five lines so a broken pyramid cannot
+    // flood the console.
+    const tally = tileTally.current;
+    const onTileError = (err: unknown) => {
+      tally.observe(err);
+      if (process.env.NODE_ENV === 'development') {
+        const [latest] = tally.recent(1);
+        if (tally.total() <= 5) {
+          console.warn(
+            `[tiles] tile failure #${tally.total()}: ${latest?.tile ?? 'provider-level'} — ${
+              latest?.message ?? 'no message'
+            }`,
+          );
+        }
+        setTileErrors(tally.total());
+      }
+    };
+    const layers = viewer.imageryLayers;
+    const subscribe = (l: Cesium.ImageryLayer) => l.errorEvent.addEventListener(onTileError);
+    const unsubscribe = (l: Cesium.ImageryLayer) => l.errorEvent.removeEventListener(onTileError);
+    const onLayerAdded = (l: Cesium.ImageryLayer) => subscribe(l);
+    const onLayerRemoved = (l: Cesium.ImageryLayer) => unsubscribe(l);
+    for (let i = 0; i < layers.length; i += 1) subscribe(layers.get(i));
+    layers.layerAdded.addEventListener(onLayerAdded);
+    layers.layerRemoved.addEventListener(onLayerRemoved);
     // Verification hooks exist only in dev. Task 18's sweep runs `npm run dev`
     // (NODE_ENV=development) and drives these; exposing setMode/setLayer/
     // setCamera on globalThis in a production bundle would hand the live scene
@@ -394,6 +526,7 @@ export default function MoonMap() {
           canvas: [viewer.canvas.clientWidth, viewer.canvas.clientHeight],
         }),
         hash: () => window.location.hash,
+        tileErrors: () => tileTally.current.total(),
         flushHash: () => {
           const view = currentUrlView();
           if (view) urlSyncRef.current?.flush(view);
@@ -402,15 +535,23 @@ export default function MoonMap() {
       };
     }
     return () => {
+      // Detach the tile-error wiring before destroying the viewer: a listener on
+      // a destroyed collection is the kind of leak that only shows up as a stale
+      // count in the next boot attempt.
+      layers.layerAdded.removeEventListener(onLayerAdded);
+      layers.layerRemoved.removeEventListener(onLayerRemoved);
+      for (let i = 0; i < layers.length; i += 1) unsubscribe(layers.get(i));
       viewer.destroy();
       viewerRef.current = null;
       globalThis.__moonViewer = undefined;
       globalThis.__moonHarness = undefined;
     };
     // mode/layer are read from the render in which the manifest first arrives;
-    // after that the two effects below own them.
+    // after that the two effects below own them. `bootNonce` is here so a retry
+    // after a failed viewer build re-runs this effect even in the (unlikely) case
+    // where the new boot hands back an identical manifest object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manifest]);
+  }, [manifest, bootNonce]);
 
   // Apply user changes after the viewer exists. The first run of this effect
   // matches the latch and is a no-op, so the viewer is never morphed while it is
@@ -573,42 +714,76 @@ export default function MoonMap() {
     };
   }, []);
 
-  // Attach place names once the viewer and features coexist; drive the
-  // tier/declutter refresh from the camera at 8 Hz and pick on click.
+  // Steps 5 and 6 of the boot order: place names, then picking. They attach to a
+  // viewer that is ALREADY drawing, so a throw here must not hide a working map
+  // behind a full-screen panel — it becomes a retryable banner (below the render),
+  // and the map keeps running.
+  //
+  // Retryability again decides the shape of the code: `labelsRef` is published
+  // only after `attachLabels` AND the first refresh have both succeeded, and the
+  // partial attach is destroyed on failure. The old order (`labelsRef.current =
+  // labels` before `refresh`) meant a throw from `refresh` left the ref set, so
+  // this effect's own `labelsRef.current` guard refused every later attempt — the
+  // Task 10 latch bug in a different file. `attachNonce` gives the banner's
+  // Try-again button a way back in.
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !features || labelsRef.current) return;
-    const labels = attachLabels(viewer, features);
-    labelsRef.current = labels;
-    labels.refresh(getCameraState(viewer).height);
-    let last = 0;
-    const onPostRender = () => {
-      const t = Date.now();
-      if (t - last < 125) return; // throttle to 8 Hz
-      last = t;
-      if (!viewer.isDestroyed()) {
-        labels.refresh(getCameraState(viewer).height);
-        updateReadout(viewer);
+    let labels: LabelSet | null = null;
+    let detachPick: (() => void) | null = null;
+    let onPostRender: (() => void) | null = null;
+    let failure: BootErrorState | null = null;
+    try {
+      labels = attachLabels(viewer, features);
+      labels.refresh(getCameraState(viewer).height);
+      let last = 0;
+      onPostRender = () => {
+        const t = Date.now();
+        if (t - last < 125) return; // throttle to 8 Hz
+        last = t;
+        if (!viewer.isDestroyed()) {
+          labels?.refresh(getCameraState(viewer).height);
+          updateReadout(viewer);
+        }
+      };
+      viewer.scene.postRender.addEventListener(onPostRender);
+      labelsRef.current = labels;
+    } catch (e: unknown) {
+      failure = bootFailure('labels', e);
+      if (onPostRender && !viewer.isDestroyed()) {
+        viewer.scene.postRender.removeEventListener(onPostRender);
+        onPostRender = null;
       }
-    };
-    viewer.scene.postRender.addEventListener(onPostRender);
-    const detachPick = attachPicking(viewer, (f) => {
-      pickedRef.current = f;
-      // A pick opens the card (Task 12 is picking's first consumer). Picking
-      // the canvas beside a label yields null, which closes it.
-      selectFeature(f);
-    });
+      labels?.destroy();
+      labels = null;
+      labelsRef.current = null;
+    }
+    if (!failure) {
+      try {
+        detachPick = attachPicking(viewer, (f) => {
+          pickedRef.current = f;
+          // A pick opens the card (Task 12 is picking's first consumer). Picking
+          // the canvas beside a label yields null, which closes it.
+          selectFeature(f);
+        });
+      } catch (e: unknown) {
+        failure = bootFailure('picking', e);
+      }
+    }
+    // `null` on a clean attach: React bails out when the value is unchanged, so
+    // this does not re-render the tree on every successful run.
+    setAttachError(failure);
     return () => {
       if (!viewer.isDestroyed()) {
-        viewer.scene.postRender.removeEventListener(onPostRender);
-        labels.destroy();
+        if (onPostRender) viewer.scene.postRender.removeEventListener(onPostRender);
+        labels?.destroy();
       }
-      detachPick();
+      detachPick?.();
       labelsRef.current = null;
     };
     // selectFeature is a stable useCallback, so this never re-runs the attach.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [features, manifest, selectFeature]);
+  }, [features, manifest, selectFeature, attachNonce]);
 
   // Keyboard navigation, attached to the window (the canvas never holds focus,
   // and a document-level listener would fight Cesium's own handlers). Keys are
@@ -648,7 +823,7 @@ export default function MoonMap() {
         className="map-host"
         data-mode={sceneMode}
       />
-      {manifest && !error && (
+      {manifest && (
         <div className="ui">
           {/* The toggle reports the mode the SCENE is in, not the one last
               clicked: a morph that fails must not leave 'Globe' looking selected
@@ -676,16 +851,50 @@ export default function MoonMap() {
               {modeError}
             </div>
           )}
+          {/* Steps 5 and 6 failed on a map that IS drawing: a banner with its own
+              retry, not a screen-replacing panel. */}
+          {attachError && (
+            <div className="ctl ctl-error ctl-attach" role="alert" aria-live="assertive">
+              <span>
+                {attachError.step === 'labels'
+                  ? 'Place names failed to attach'
+                  : 'Map picking failed to attach'}
+                {' — '}
+                {bootHint(attachError.kind)} <code>{attachError.message}</code>
+              </span>
+              <button type="button" className="panel-retry" onClick={retryAttach}>
+                Try again
+              </button>
+            </div>
+          )}
+          {/* Dev-only tile-failure counter, straight from Cesium's own error events
+              (design §4.4). Zero means zero real `ImageryLayer.errorEvent`
+              firings — never an estimate. */}
+          {process.env.NODE_ENV === 'development' && tileErrors > 0 && (
+            <div className="ctl ctl-tile-errors" role="status">
+              tile load errors: {tileErrors}
+            </div>
+          )}
           <FeatureCard feature={selected} onClose={() => selectFeature(null)} />
         </div>
       )}
-      {error && (
-        // Task 15 replaces this with the full NoAssets failure panel.
+      {boot.phase === 'booting' && webgl !== false && (
         <div className="ui">
-          <div className="ctl ctl-error" role="alert">
-            Map assets are unavailable: {error}
+          <div className="ctl ctl-note" role="status">
+            Loading baked lunar imagery…
           </div>
         </div>
+      )}
+      {boot.phase === 'assets' && (
+        <NoAssets missing={boot.missing} onRetry={retryBoot} />
+      )}
+      {boot.phase === 'error' && (
+        <ErrorPanel
+          kind={boot.kind}
+          step={boot.step}
+          message={boot.message}
+          onRetry={retryBoot}
+        />
       )}
       {/* Outside `.ui` on purpose: provenance stays on screen even when the
           manifest or features.json is missing. */}
