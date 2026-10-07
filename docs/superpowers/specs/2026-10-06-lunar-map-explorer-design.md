@@ -191,16 +191,40 @@ note).
    average` with factors 2…64. Every later read then comes from a matching
    overview, which is what keeps the bake O(total tile pixels) instead of
    O(native × levels).
-3. **Stage 2 — top level.** For each tile at the top level, read a window of
-   `(512 + 2m)²` px with `m = 8` bleed, composite (§2.2), crop to 512, encode.
-   Memory bounded to one window. Padding is **periodic in longitude** (columns 0
-   and `cols-1` wrap) and **clamped in latitude** (poles). Without periodic
-   padding the local blur produces a visible 1-tile-wide streak at the
-   antimeridian — the classic global-map bug, so it is specified, not discovered.
+3. **Stage 2 — top level, in full-width bands.** The top level is baked as
+   horizontal bands: each band covers **all 360° of longitude** at the top
+   level's resolution (`world_px_width(L)` px wide) and `--band-rows` rows tall,
+   plus `radius` (8) extra rows above and below so the Gaussian support sees real
+   neighbouring data; the band is then sliced into the 512 px tiles it contains.
+   Padding is **periodic in longitude** — which is now array periodicity
+   (`np.pad(mode='wrap')` across the band, `composite.chroma_detail(...,
+   wrap_x=True)`) rather than wrapped window arithmetic — and **clamped in
+   latitude**, because the poles are real boundaries. The precondition is stated,
+   not assumed: `blur_separable`'s `wrap_x=True` is correct *only* for an array
+   spanning the full width, so any path that composites a narrower crop must pass
+   `wrap_x=False`. Without periodic padding the local blur produces a visible
+   1-tile-wide streak at the antimeridian — the classic global-map bug, so it is
+   specified, not discovered, and it is pinned by
+   `test_the_band_blur_is_periodic_across_a_step_at_the_seam`. Memory is bounded
+   by `--band-rows`, not by the world.
 4. **Stage 3 — derive lower levels from the level above** by 2×2 box averages of
-   four neighbouring tiles plus their margins. Guarantees parent/child geometric
-   consistency (no cross-level flicker). Cost: parents are averages of decoded
-   JPEG, slightly softer than re-reading source overviews; accepted trade-off.
+   four neighbouring tiles (`derive.derive_levels`, top level down to level 0).
+   Every parent has **exactly four children** at every level — a level has twice
+   the columns and the rows of the one below, and level 0 is the base case — so
+   there is no partial-child special case to get wrong and no margins to
+   re-read. Guarantees parent/child geometric consistency (no cross-level
+   flicker). Cost: parents are averages of decoded JPEG, slightly softer than
+   re-reading source overviews; accepted trade-off, pinned at `quality=100` so
+   the ±2 bound is a real JPEG limit rather than a fudge factor.
+
+   *Amended 2026-10-06 by plan Task 7 — periodicity lives in the band, not in
+   per-tile window arithmetic.* Stage 1 as written above (block-tiled GDAL
+   working copies with internal overviews) turned out to be unnecessary: each
+   band is read straight from the source at the level's own resolution with
+   `resampling=average` / `bilinear`, so no intermediate file is produced. The
+   `bake.read_world_rows` band read is what that stage became; the memory bound
+   and the O(total tile pixels) cost Stage 1 existed to buy are preserved by
+   `--band-rows`.
 5. **Stage 4 — labels.** Parse the shapefile (DBF + SHP) with `pyshp`; apply the
    curation and tiering in §4.1; emit `public/data/features.json` with
    planetocentric ±180 lon, tier, diameter, gloss, gazetteer URL.
