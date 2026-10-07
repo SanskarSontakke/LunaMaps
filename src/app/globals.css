@@ -25,3 +25,37 @@ main {
 .map-host canvas {
   display: block;
 }
+.ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  font: 13px/1.4 system-ui, sans-serif;
+  color: #e8e8e8;
+}
+.ctl {
+  position: absolute;
+  pointer-events: auto;
+  display: flex;
+  gap: 2px;
+  background: rgba(12, 14, 20, 0.72);
+  border-radius: 7px;
+  padding: 3px;
+  backdrop-filter: blur(6px);
+}
+.ctl-mode { top: 14px; left: 14px; }
+.ctl-layer { top: 14px; left: 148px; }
+.ctl button {
+  all: unset;
+  cursor: pointer;
+  padding: 5px 11px;
+  border-radius: 5px;
+  letter-spacing: 0.02em;
+}
+.ctl button.on {
+  background: rgba(255, 255, 255, 0.16);
+}
+.ctl-error {
+  top: 14px;
+  left: 14px;
+  padding: 8px 14px;
+}

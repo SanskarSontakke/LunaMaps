@@ -1,7 +1,7 @@
 import * as Cesium from 'cesium';
-import type { LayerName } from '@/types';
+import type { LayerName, Mode } from '@/types';
 
-export type { LayerName };
+export type { LayerName, Mode };
 
 export const MOON_RADIUS_M = 1_737_400;
 export const TILE_SIZE = 512;
@@ -33,7 +33,9 @@ export function makeProvider(layer: LayerName, top: number) {
 export interface MoonViewerOptions {
   layer: LayerName;
   top: number;
-  mode: 'globe' | 'paper';
+  // Mode lives in types.ts so the viewer options and the UI controls cannot
+  // drift apart (deferred finding from the Task 2 review).
+  mode: Mode;
 }
 
 export function createMoonViewer(container: HTMLElement, opts: MoonViewerOptions) {
