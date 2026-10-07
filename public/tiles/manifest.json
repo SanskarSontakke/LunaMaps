@@ -213,5 +213,63 @@
     "note": "shapefile bundle consumed by scripts/labels.py; not a raster, so no GDAL driver is involved. crcOk is ZipFile.testzip(): every member inflated and CRC-32 checked"
    }
   }
+ },
+ "albedoHistogram": {
+  "level": 5,
+  "mean": 64.34,
+  "p33": 47,
+  "p67": 76,
+  "samples": 536870912,
+  "tiles": 2048
+ },
+ "geometryProof": {
+  "passed": true,
+  "level": 5,
+  "mareMedian": 33.5,
+  "highlandMedian": 80.5,
+  "contrast": 47.0,
+  "checks": {
+   "mare:Mare Tranquillitatis": "25",
+   "mare:Mare Imbrium": "34",
+   "mare:Mare Crisium": "33",
+   "mare:Oceanus Procellarum": "27",
+   "mare:Mare Fecunditatis": "34",
+   "mare:Mare Nubium": "29",
+   "mare:Mare Serenitatis": "34",
+   "mare:Mare Marginis": "37",
+   "mare:Mare Humboldtianum": "35",
+   "mare:Mare Vaporum": "33",
+   "mare:Mare Nectaris": "49",
+   "mare:Mare Frigoris": "47",
+   "mare:Mare Cognitum": "33",
+   "mare:Mare Insularum": "33",
+   "mare:Mare Orientale": "56",
+   "mare:Mare Undarum": "31",
+   "mare:Mare Smythii": "37",
+   "mare:Sinus Iridum": "35",
+   "mare:Lacus Mortis": "0",
+   "mare:Lacus Felicitatis": "26",
+   "highland:Tycho": "54",
+   "highland:Copernicus": "168",
+   "highland:Kepler": "73",
+   "highland:Aristarchus": "123",
+   "highland:Clavius": "142",
+   "highland:Theophilus": "144",
+   "highland:Langrenus": "141",
+   "highland:Janssen": "63",
+   "highland:Maginus": "79",
+   "highland:Ptolemaeus": "52",
+   "highland:Petavius": "82",
+   "highland:Piccolomini": "6",
+   "highland:Regiomontanus": "97",
+   "highland:Avogadro": "96",
+   "highland:Hermite": "8",
+   "highland:Messala": "68",
+   "apollo11:West": "23.4908,0.6705 albedo 28",
+   "apollo11:Mount Marilyn": "40.0000,1.1300 albedo 57",
+   "apollo11:Little West": "23.4756,0.6743 albedo 28",
+   "apollo11:Double": "23.4727,0.6738 albedo 28"
+  },
+  "failures": []
  }
 }
