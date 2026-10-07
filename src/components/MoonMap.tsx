@@ -1,11 +1,18 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
 import { createMoonViewer, MOON_ELLIPSOID } from '@/lib/cesium/moon';
-import { getCameraState, setLayer, setMode, type CameraState } from '@/lib/cesium/morph';
+import {
+  flyToFeature,
+  getCameraState,
+  setLayer,
+  setMode,
+  type CameraState,
+} from '@/lib/cesium/morph';
 import { attachPicking } from '@/lib/cesium/picking';
 import { attachLabels, type LabelSet } from '@/lib/labels/entities';
 import { layerTop, useManifest } from '@/lib/assets';
+import { fuzzySearch } from '@/lib/search';
 import { cameraHeightForLevel } from '@/lib/grid';
 import {
   DEFAULT_LAYER,
@@ -18,6 +25,8 @@ import {
 } from '@/types';
 import ModeToggle from './ModeToggle';
 import LayerChips from './LayerChips';
+import SearchBox from './SearchBox';
+import FeatureCard from './FeatureCard';
 
 declare global {
   // Exposed for the browser verification harness only.
@@ -43,6 +52,10 @@ export interface MoonHarness {
   shownEntities(): number;
   refreshLabels(heightM?: number): void;
   picked(): Feature | null;
+  /** Dev-sweep helpers for Task 12: search without a DOM, and card state. */
+  search(query: string): string[];
+  selectByName(name: string): boolean;
+  selected(): Feature | null;
 }
 
 // Cesium.SceneMode enum values as names (MORPHING=0 … SCENE3D=3), for readable
@@ -68,7 +81,12 @@ export default function MoonMap() {
   const pickedRef = useRef<Feature | null>(null);
   const { manifest, error } = useManifest();
   const [features, setFeatures] = useState<FeatureCollection | null>(null);
-  const [, setSelectedFeature] = useState<Feature | null>(null);
+  // A ref mirror of the two pieces of late-arriving state the dev harness needs
+  // (it is built once, when the viewer is created, long before `features`
+  // exists and independently of every re-render).
+  const featuresRef = useRef<FeatureCollection | null>(null);
+  const selectedRef = useRef<Feature | null>(null);
+  const [selected, setSelectedFeature] = useState<Feature | null>(null);
   const [mode, setModeState] = useState<Mode>(DEFAULT_MODE);
   const [layer, setLayerState] = useState<LayerName>(DEFAULT_LAYER);
   // What the live viewer was built with and has since been *confirmed* at: the
@@ -85,6 +103,30 @@ export default function MoonMap() {
   // click while the first is still morphing.
   const requested = useRef<Mode>(DEFAULT_MODE);
   const [modeError, setModeError] = useState<string | null>(null);
+
+  // Card state for both entry points (search result and map click). Kept
+  // separate from `pickedRef`, which stays strictly "what the last left-click
+  // picked" so Task 11's harness metric does not drift.
+  const selectFeature = useCallback((f: Feature | null) => {
+    selectedRef.current = f;
+    setSelectedFeature(f);
+  }, []);
+  // Search / pick → card + camera. `flyToFeature` needs a live viewer; with no
+  // viewer yet (features can load before the manifest does) the card still
+  // opens — the design §6 degraded path, not a silent no-op.
+  const goToFeature = useCallback(
+    (f: Feature) => {
+      const viewer = viewerRef.current;
+      if (viewer && !viewer.isDestroyed()) {
+        flyToFeature(viewer, {
+          coordinates: f.geometry.coordinates,
+          diameterKm: f.properties.diameterKm,
+        });
+      }
+      selectFeature(f);
+    },
+    [selectFeature],
+  );
 
   // The viewer is created only after the manifest has loaded and validated,
   // so `top` is real and a broken build fails in the panel below, not in a
@@ -157,6 +199,20 @@ export default function MoonMap() {
         refreshLabels: (heightM?: number) =>
           labelsRef.current?.refresh(heightM ?? getCameraState(viewer).height),
         picked: () => pickedRef.current,
+        // Task 18 sweep helpers: drive search and the card without a DOM.
+        search: (q: string) =>
+          featuresRef.current
+            ? fuzzySearch(q, featuresRef.current).map((f) => f.properties.name)
+            : [],
+        selectByName: (name: string) => {
+          const hit = (featuresRef.current?.features ?? []).find(
+            (f) => f.properties.name === name,
+          );
+          if (!hit) return false;
+          goToFeature(hit);
+          return true;
+        },
+        selected: () => selectedRef.current,
       };
     }
     return () => {
@@ -211,10 +267,15 @@ export default function MoonMap() {
         return r.json();
       })
       .then((fc: FeatureCollection) => {
-        if (alive) setFeatures(fc);
+        if (!alive) return;
+        featuresRef.current = fc;
+        setFeatures(fc);
       })
       .catch(() => {
-        if (alive) setFeatures(null);
+        if (alive) {
+          featuresRef.current = null;
+          setFeatures(null);
+        }
       });
     return () => {
       alive = false;
@@ -239,7 +300,9 @@ export default function MoonMap() {
     viewer.scene.postRender.addEventListener(onPostRender);
     const detachPick = attachPicking(viewer, (f) => {
       pickedRef.current = f;
-      setSelectedFeature(f);
+      // A pick opens the card (Task 12 is picking's first consumer). Picking
+      // the canvas beside a label yields null, which closes it.
+      selectFeature(f);
     });
     return () => {
       if (!viewer.isDestroyed()) {
@@ -249,7 +312,9 @@ export default function MoonMap() {
       detachPick();
       labelsRef.current = null;
     };
-  }, [features, manifest]);
+    // selectFeature is a stable useCallback, so this never re-runs the attach.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [features, manifest, selectFeature]);
 
   return (
     <>
@@ -258,11 +323,19 @@ export default function MoonMap() {
         <div className="ui">
           <ModeToggle mode={mode} onChange={setModeState} />
           <LayerChips layer={layer} onChange={setLayerState} />
+          <SearchBox features={features} onChoose={goToFeature} />
+          {!features && (
+            <div className="ctl ctl-note" role="status">
+              Place names unavailable — search and labels are off; the map still
+              works.
+            </div>
+          )}
           {modeError && (
             <div className="ctl ctl-error" role="alert" aria-live="assertive">
               {modeError}
             </div>
           )}
+          <FeatureCard feature={selected} onClose={() => selectFeature(null)} />
         </div>
       )}
       {error && (

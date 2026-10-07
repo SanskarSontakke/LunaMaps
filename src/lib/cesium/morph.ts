@@ -196,3 +196,35 @@ export function setLayer(viewer: Cesium.Viewer, layer: LayerName, top: number): 
   viewer.imageryLayers.addImageryProvider(makeProvider(layer, top));
   viewer.scene.requestRender();
 }
+
+/**
+ * Camera height (m) for a fly-to: four feature diameters, never closer than
+ * 20 km (spec §4.3), and always inside the screen-space controller's limits —
+ * a 188 m traverse crater would otherwise ask for 753 m, below MIN_H, and
+ * Cesium would clamp it silently instead of erroring.
+ */
+export function flyToHeightMeters(diameterKm: number | null): number {
+  const diameter = diameterKm ?? 60;
+  return clampHeight(Math.max(20_000, diameter * 1000 * 4));
+}
+
+/**
+ * Search / pick → camera. Pure maths on the shared moon ellipsoid, so it is
+ * unit-testable with a stub viewer; `duration` is the only animation knob.
+ */
+export function flyToFeature(
+  viewer: Cesium.Viewer,
+  feature: { coordinates: [number, number]; diameterKm: number | null },
+): void {
+  const [lon, lat] = feature.coordinates;
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(
+      lon,
+      lat,
+      flyToHeightMeters(feature.diameterKm),
+      MOON_ELLIPSOID,
+    ),
+    duration: 1.4,
+    orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
+  });
+}
