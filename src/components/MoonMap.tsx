@@ -638,7 +638,16 @@ export default function MoonMap() {
 
   return (
     <>
-      <div ref={hostRef} id="cesiumContainer" className="map-host" />
+      {/* `sceneMode`, not `mode`: the tint has to match what the scene actually
+          reached. Task 10 round 2 established that `mode` is the last one clicked
+          and `sceneMode` is the confirmed one — binding the paper sheet to the
+          intent would paint a warm map under a scene whose morph failed. */}
+      <div
+        ref={hostRef}
+        id="cesiumContainer"
+        className="map-host"
+        data-mode={sceneMode}
+      />
       {manifest && !error && (
         <div className="ui">
           {/* The toggle reports the mode the SCENE is in, not the one last

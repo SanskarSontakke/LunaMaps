@@ -12,7 +12,7 @@ import {
   settleMode,
   type CameraState,
 } from '@/lib/cesium/morph';
-import { MAX_H as MOON_MAX_H, MIN_H as MOON_MIN_H } from '@/lib/cesium/moon';
+import { MAX_H as MOON_MAX_H, MIN_H as MOON_MIN_H, baseColorFor } from '@/lib/cesium/moon';
 import type { Mode } from '@/types';
 
 describe('clampHeight', () => {
@@ -90,6 +90,9 @@ function fakeViewer(opts: {
       mode: opts.mode,
       isDestroyed: () => !!opts.sceneDestroyed,
       screenSpaceCameraController: { enableTilt: true },
+      // Task 16: `settleMode` paints the globe itself, so the fake has to carry
+      // the field it writes. The sentinel is what the untouched tests assert on.
+      globe: { baseColor: 'untouched' as unknown as Cesium.Color },
       requestRender: () => {
         calls.render += 1;
       },
@@ -179,6 +182,65 @@ describe('settleMode outcome reporting', () => {
 });
 
 /**
+ * Task 16: the globe base colour is part of settling a mode, not an extra pass.
+ *
+ * `scene.globe.baseColor` is what shows wherever no tile is loaded — in paper
+ * mode that is the band around the rectangular world, so a mode that landed
+ * without repainting the globe reads as a sheet with a dark hole in it. It is
+ * asserted on the SAME guard as everything else in `settleMode`: a torn-down or
+ * never-landed scene must not be written to at all.
+ */
+describe('settleMode paints the globe base colour for the mode', () => {
+  it('paints the paper tone when the scene reached paper', () => {
+    const target = Cesium.SceneMode.SCENE2D;
+    const { viewer, scene } = fakeViewer({ mode: target });
+    settleMode(viewer, 'paper', target, snap);
+    expect(scene.globe.baseColor).toEqual(baseColorFor('paper'));
+  });
+
+  it('paints the void tone back when the scene reached globe', () => {
+    const target = Cesium.SceneMode.SCENE3D;
+    const { viewer, scene } = fakeViewer({ mode: target });
+    scene.globe.baseColor = baseColorFor('paper');
+    settleMode(viewer, 'globe', target, snap);
+    expect(scene.globe.baseColor).toEqual(baseColorFor('globe'));
+  });
+
+  it('writes nothing when the viewer was destroyed mid-morph', () => {
+    const target = Cesium.SceneMode.SCENE2D;
+    const { viewer, scene } = fakeViewer({ mode: target, destroyed: true });
+    settleMode(viewer, 'paper', target, snap);
+    expect(scene.globe.baseColor).toBe('untouched');
+  });
+
+  it('writes nothing when the morph never landed', () => {
+    const target = Cesium.SceneMode.SCENE2D;
+    const { viewer, scene } = fakeViewer({ mode: Cesium.SceneMode.SCENE3D });
+    expect(() => settleMode(viewer, 'paper', target, snap)).toThrow(
+      MorphIncompleteError,
+    );
+    expect(scene.globe.baseColor).toBe('untouched');
+  });
+
+  it('the two tones differ, and setMode reaches the paint too', async () => {
+    expect(baseColorFor('paper')).not.toEqual(baseColorFor('globe'));
+    // End-to-end through the real entry point, not just `settleMode`: this fake
+    // lands the morph on the first poll, so the deadline pump is never armed.
+    const viewer = morphableViewer({
+      start: Cesium.SceneMode.SCENE3D,
+      morphLands: true,
+      completeTo: Cesium.SceneMode.SCENE2D,
+    });
+    const out = await setMode(viewer, 'paper');
+    expect(out.applied).toBe(true);
+    const { globe } = viewer.scene as unknown as {
+      globe: { baseColor: Cesium.Color };
+    };
+    expect(globe.baseColor).toEqual(baseColorFor('paper'));
+  });
+});
+
+/**
  * A viewer whose scene can be mid-morph, with the two behaviours the deadline
  * path depends on: morphToX leaves MORPHING (a hidden tab never advances the
  * tweens) and completeMorph lands wherever the *running* transition was headed —
@@ -206,6 +268,7 @@ function morphableViewer(opts: {
     requestRender: () => {},
     render: () => {},
     screenSpaceCameraController: { enableTilt: true },
+    globe: { baseColor: 'untouched' as unknown as Cesium.Color },
   };
   const viewer = {
     isDestroyed: () => false,

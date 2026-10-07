@@ -25,6 +25,26 @@ main {
 .map-host canvas {
   display: block;
 }
+/* Task 16 — the paper look, per mode.
+
+   The `paper` layer is illumination-normalized albedo: deliberately flat
+   grayscale, because that is what makes it legible as a map. The warmth belongs
+   in the renderer, so it can change without a multi-hour re-bake. This is a LOOK
+   (a canvas-wide filter) and not a cartographic colour ramp — no hypsometric
+   tints, no contours; see docs/superpowers/specs/verify-16.md.
+
+   `#efe9dc` must stay the same value as PAPER_BASE_COLOR in src/lib/cesium/moon.ts
+   (the globe's own colour, visible around the rectangular world); the pairing is
+   pinned by src/test/paperTint.test.ts. */
+.map-host[data-mode='paper'] {
+  background: #efe9dc;
+}
+.map-host[data-mode='paper'] canvas {
+  filter: sepia(0.22) saturate(0.55) contrast(0.94) brightness(1.08);
+}
+.map-host[data-mode='globe'] canvas {
+  filter: saturate(1.04) contrast(1.02);
+}
 .ui {
   position: fixed;
   inset: 0;

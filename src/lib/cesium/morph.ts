@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import type { LayerName, Mode } from '@/types';
-import { MAX_H, MIN_H, MOON_ELLIPSOID, makeProvider } from './moon';
+import { MAX_H, MIN_H, MOON_ELLIPSOID, baseColorFor, makeProvider } from './moon';
 
 // The height limits are defined once in moon.ts (where the screen-space
 // controller is configured) and re-exported here so callers and tests keep
@@ -166,6 +166,12 @@ export function settleMode(
   if (viewer.scene.mode !== target) throw new MorphIncompleteError(mode);
   const scene = viewer.scene;
   scene.screenSpaceCameraController.enableTilt = mode === 'globe';
+  // Task 16: the sheet tone. Part of *settling* the mode, so it is covered by the
+  // same guard as the tilt and the camera — a scene that never reached `mode`
+  // (rejected, or destroyed mid-morph) keeps the colour of what it still shows.
+  // The CSS tint rides on the canvas; this is what the engine paints where no tile
+  // exists, i.e. the margins around the rectangular world in paper mode.
+  scene.globe.baseColor = baseColorFor(mode);
   viewer.camera.setView({
     // Cartesian3 (not Cartographic) because 1.146's setView typings only
     // accept Rectangle | Cartesian3; fromDegrees on the moon ellipsoid is
