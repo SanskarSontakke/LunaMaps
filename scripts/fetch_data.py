@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -22,14 +23,43 @@ SOURCE_SPECS = [
      'url': 'https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color_poles.tif',
      'bytes': 518_090_428, 'sidecars': []},
     {'role': 'labels', 'name': 'MOON_nomenclature_center_pts.zip',
+     'kind': 'archive',
      'url': 'https://asc-planetarynames-data.s3.us-west-2.amazonaws.com/MOON_nomenclature_center_pts.zip',
      'bytes': 23_845_070, 'sidecars': []},
 ]
 
 
+def _content_range_total(header: str | None) -> int | None:
+    # 'bytes 0-0/2500331610' -> 2500331610
+    if header and '/' in header:
+        try:
+            return int(header.rsplit('/', 1)[1])
+        except ValueError:
+            return None
+    return None
+
+
 def remote_size(url: str) -> int | None:
-    req = urllib.request.Request(url, method='HEAD')
+    """Content-Length from HEAD, falling back to a 1-byte ranged GET.
+
+    S3 answers HEAD with 405 on some endpoints, and a request past the end of a
+    small object with 416, so a probe that cannot be served is not treated as a
+    download failure -- it is retried as a GET before giving up.
+    """
+    try:
+        req = urllib.request.Request(url, method='HEAD')
+        with urllib.request.urlopen(req, timeout=120) as r:
+            value = r.headers.get('Content-Length')
+        if value:
+            return int(value)
+    except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+        print(f'note  HEAD {url} failed ({exc}); probing with a ranged GET',
+              flush=True)
+    req = urllib.request.Request(url, headers={'Range': 'bytes=0-0'})
     with urllib.request.urlopen(req, timeout=120) as r:
+        total = _content_range_total(r.headers.get('Content-Range'))
+        if total:
+            return total
         value = r.headers.get('Content-Length')
     return int(value) if value else None
 
@@ -57,8 +87,17 @@ def download(url: str, dest: Path, total: int | None = None) -> Path:
     # headers= must be a keyword: Request's second positional parameter is
     # `data`, and passing the header dict there flips the method to POST, which
     # S3 rejects with 405 Method Not Allowed.
-    with urllib.request.urlopen(
-            urllib.request.Request(url, headers=headers), timeout=900) as r:
+    try:
+        handle = urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=900)
+    except urllib.error.HTTPError as exc:
+        # 416 with a non-empty .part means the partial already covers the
+        # object: finish it instead of calling it a failed transfer.
+        if exc.code == 416 and have and total and have >= total:
+            tmp.replace(dest)
+            return dest
+        raise
+    with handle as r:
         if have and r.status != 206:
             raise SystemExit(f'{url}: server ignored Range (status {r.status}); '
                              'delete the .part file and re-run')
@@ -79,6 +118,31 @@ def download(url: str, dest: Path, total: int | None = None) -> Path:
     return dest
 
 
+def fetch_sidecars(spec) -> dict:
+    """Fetch PAM/metadata sidecars next to the main file -- best effort.
+
+    They must land beside the raster because GDAL resolves a .aux.xml by
+    location. A failure here is deliberately non-fatal: the detail JP2 embeds
+    its own georeference (GMLJP2 box plus a GeoTIFF uuid box), so the deciding
+    evidence is Stage 0's gridReadFrom == 'raster', not the sidecar's presence.
+    """
+    out = {}
+    for url in spec['sidecars']:
+        name = Path(url).name
+        dest = RAW / name
+        try:
+            got = download(url, dest)
+            out[name] = {'ok': True, 'bytes': got.stat().st_size}
+            print(f'      sidecar {name} ({got.stat().st_size:,} B)', flush=True)
+        except (Exception, SystemExit) as exc:
+            # SystemExit is a BaseException, so listing it explicitly is what
+            # keeps "no Content-Length" from aborting a finished 2.5 GB fetch.
+            out[name] = {'ok': False, 'error': f'{type(exc).__name__}: {exc}'}
+            print(f'note  sidecar {name} not fetched ({exc}); non-fatal -- the '
+                  f'georeference is embedded in the source itself', flush=True)
+    return out
+
+
 def fetch(spec, force=False) -> dict:
     dest = RAW / spec['name']
     if dest.exists() and not force:
@@ -86,7 +150,8 @@ def fetch(spec, force=False) -> dict:
             digest = sha256(dest)
             print(f'have  {spec["name"]} ({dest.stat().st_size:,} B, sha256 {digest[:12]}…)')
             return {'name': spec['name'], 'url': spec['url'], 'role': spec['role'],
-                    'bytes': dest.stat().st_size, 'sha256': digest, 'reused': True}
+                    'bytes': dest.stat().st_size, 'sha256': digest, 'reused': True,
+                    'sidecars': fetch_sidecars(spec)}
         print(f'      {spec["name"]} is the wrong size; re-downloading')
     total = remote_size(spec['url'])
     if total and spec['bytes'] and total != spec['bytes']:
@@ -95,11 +160,11 @@ def fetch(spec, force=False) -> dict:
     download(spec['url'], dest, total)
     if dest.stat().st_size != total:
         raise SystemExit(f'{spec["name"]}: {dest.stat().st_size:,} != Content-Length {total:,}')
-    for url in spec['sidecars']:
-        download(url, RAW / Path(url).name)
+    sidecars = fetch_sidecars(spec)
     print(f'gave  {spec["name"]} ({dest.stat().st_size:,} B)')
     return {'name': spec['name'], 'url': spec['url'], 'role': spec['role'],
-            'bytes': dest.stat().st_size, 'sha256': sha256(dest)}
+            'bytes': dest.stat().st_size, 'sha256': sha256(dest),
+            'sidecars': sidecars}
 
 
 def probe_capabilities() -> dict:
@@ -109,17 +174,37 @@ def probe_capabilities() -> dict:
         path = RAW / spec['name']
         if not path.exists():
             continue
+        if spec.get('kind') == 'archive':
+            # The gazetteer is a shapefile zip, not a raster: probing it with
+            # rasterio produced a bogus open:false + RasterioIOError that read
+            # like a driver failure. Verify it as an archive instead.
+            import zipfile
+            try:
+                with zipfile.ZipFile(path) as z:
+                    names = z.namelist()
+                out['drivers'][spec['role']] = {
+                    'archive': True, 'entries': len(names),
+                    'members': names, 'isRaster': False,
+                    'note': 'shapefile bundle consumed by scripts/labels.py; '
+                            'not a raster, so no GDAL driver is involved'}
+            except Exception as exc:
+                out['drivers'][spec['role']] = {
+                    'archive': False, 'isRaster': False,
+                    'error': f'{type(exc).__name__}: {exc}'}
+            continue
         try:
             with rasterio.open(path) as ds:
                 rec = {'open': True, 'shape': list(ds.shape), 'count': ds.count,
                        'dtypes': list(ds.dtypes), 'crs': str(ds.crs),
-                       'transform': list(ds.transform), 'driver': ds.driver}
+                       'transform': list(ds.transform), 'driver': ds.driver,
+                       'nodata': list(ds.nodatavals)}
                 win = ds.read(1, window=((0, 64), (0, 64)))
                 rec.update(decode_min=int(win.min()), decode_max=int(win.max()))
             out['drivers'][spec['role']] = rec
         except Exception as exc:
             out['drivers'][spec['role']] = {
-                'open': False, 'error': f'{type(exc).__name__}: {exc}'}
+                'open': False, 'isRaster': True,
+                'error': f'{type(exc).__name__}: {exc}'}
     return out
 
 
