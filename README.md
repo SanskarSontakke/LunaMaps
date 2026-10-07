@@ -72,8 +72,8 @@ node scripts/g1_tiling_probe.mjs                        # Gate G1 criteria 3+4, 
 ```
 
 The probes print and always exit 0: diagnostics, not tests. `npm run proof` writes `albedoHistogram` and
-`geometryProof` into the tracked `manifest.json`, so it dirties the tree. Measured at this commit
-(`d0557ab`): vitest **195 passed / 15 files**, pytest **168 passed**.
+`geometryProof` into the tracked `manifest.json`, so it dirties the tree. `npm run test`, run on this
+branch once Task 15 had landed: vitest **209 passed / 15 files**, pytest **168 passed**.
 
 **Gate G1** proves Cesium boots on self-hosted assets and that the geodetic `y` origin is what the bake
 writes: `row0north = 90.000°`, `row1north = 0°`, L1 grid `4 x 2`, L2 `8 x 4`, `tileWidth = 512`, radii
@@ -156,8 +156,10 @@ is U+2019 on purpose):
     preservation are proven, the transition is not; the deadline was raised to 15 s to make a jump-cut less
     likely, not to rule one out.
   - the **three failure panels** of plan Task 15 and spec §4.4 (unbaked tiles/manifest, missing Cesium
-    static assets, no WebGL2) have never been forced in a real tab; the WebGL2 path cannot even be provoked
-    here, and Task 15 was still landing as this file was written.
+    static assets, no WebGL2) have never been forced in a real tab. `docs/superpowers/specs/verify-15.md`
+    says so itself: the boot order and the panels' text are proven with injected fakes and
+    `react-dom/server` renders, and the three real paths are listed as owed to the Task 18 sweep. The
+    WebGL2 path cannot even be provoked in this harness.
   - the **four per-mode screenshots** owed by `verify-16.md` (globe+photo, globe+paper, paper+paper,
     paper+photo at L2 and L6) do not exist, so no claim is made about how either mode looks.
   - also owed: label subtlety and overlap in a real view, real mouse-drag behaviour, the `±180` strip and
