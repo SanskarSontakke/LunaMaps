@@ -43,6 +43,10 @@ from composite import chroma_detail
 
 TILE = grid.TILE
 OUT_DEFAULT = 'public/tiles'
+# The two product layers the app requires a record for (`assets.ts` validates
+# both, and `LayerName` in src/types.ts is exactly this pair). `probe` is the
+# Task 2 gate fixture, not a product layer, and is never baked through here.
+PRODUCT_LAYERS = ('paper', 'photo')
 # MEASURED, not guessed: Tier A both layers at q85, from the committed
 # public/tiles/manifest.json written by the 2 h 58 min bake recorded in
 # docs/superpowers/specs/bake-log.md §4. bits = bytes * 8 / (512 * 512) over the
@@ -235,6 +239,9 @@ def disk_refusal(est: dict, needed: int, free: int, out_dir: str,
         f'npm run bake -- --top {top} --layer photo --band-rows {band_rows} '
         f'-> {subset["bytes"]:,} B, needs {s_needed:,} B '
         f'({s_needed / 1e9:.2f} GB), {s_lo / 3600:.1f}-{s_hi / 3600:.1f} h',
+        f'    (that command leaves the tiles of the layer it does not bake alone '
+        f'and carries that layer\'s record forward, so the manifest the app '
+        f'validates stays complete -- see run())',
         f'  or keep this plan and point --out at a volume with at least '
         f'{needed / 1e9:.2f} GB free.',
         f'  Tier B is opt-in: declining it is a valid answer. L6 (166.5 m/px) '
@@ -314,6 +321,18 @@ def bake_top(detail: str, color: str, layer: str, L: int, band_rows: int, k,
     return written
 
 
+def carried_layers(out: Path, baked) -> tuple:
+    """The product layers that are on disk but were NOT baked by this run.
+
+    A one-layer run still delivers a two-layer pyramid, and `assets.ts` refuses a
+    manifest that does not record both layers, so these records are measured from
+    the tree and carried forward (see `run`). Order is `PRODUCT_LAYERS`'s, so the
+    manifest's key order stays stable whichever layer was baked.
+    """
+    return tuple(l for l in PRODUCT_LAYERS
+                 if l not in baked and (out / l).is_dir())
+
+
 def layer_record(out: Path, layer: str, quality, detail_gain,
                  top: int | None = None,
                  counts: tuple[int, int] | None = None) -> dict:
@@ -336,7 +355,7 @@ def layer_record(out: Path, layer: str, quality, detail_gain,
     return rec
 
 
-def run(detail: str, color: str, layers=('paper', 'photo'), top: int = 6,
+def run(detail: str, color: str, layers=PRODUCT_LAYERS, top: int = 6,
         quality: int = 85, band_rows: int = 1024, k=0.4,
         out_dir: str = OUT_DEFAULT, force: bool = False, sigma: float = 2.5,
         radius: int = 8, quiet: bool = False) -> int:
@@ -349,6 +368,13 @@ def run(detail: str, color: str, layers=('paper', 'photo'), top: int = 6,
     109164x54582 grid the real spec claims.
     """
     out = Path(out_dir)
+    layers = tuple(layers)
+    # Read the record that is already there BEFORE writing the new one: a
+    # single-layer run carries the other layer's record out of it (MUST FIX 5),
+    # and `layer_record` cannot recover `quality`/`detailGain` off a JPEG.
+    mp = out / 'manifest.json'
+    prev_manifest = json.loads(mp.read_text(encoding='utf-8')) if mp.exists() else {}
+    prev_layers = prev_manifest.get('layers', {})
     t0 = time.time()
     baked = derived = 0
     counts: dict[str, tuple[int, int]] = {}
@@ -371,11 +397,30 @@ def run(detail: str, color: str, layers=('paper', 'photo'), top: int = 6,
             if top:
                 print(f'{layer}: {n_derived} parent tiles derived '
                       f'L{top-1}..L0')
-    m = manifest_mod.base_manifest(manifest_mod.baked_levels(out, layers))
+    m = manifest_mod.base_manifest(manifest_mod.baked_levels(
+        out, layers + carried_layers(out, layers)))
     for layer in layers:
         m['layers'][layer] = layer_record(
             out, layer, quality, None if layer == 'paper' else k, top,
             counts.get(layer))
+    # MUST FIX 5: a run that bakes ONE layer must not delete the OTHER layer's
+    # record. `base_manifest()` starts with `layers: {}`, so the old code wrote a
+    # manifest holding only `photo`, `assets.ts` then refused the whole file (its
+    # `isRecord(paper)` check), and the user landed on "manifest.json is not
+    # compatible with this build" -- for following the advice the disk refusal
+    # itself prints (`npm run bake -- --top 7 --layer photo`). The unbaked layer's
+    # record is therefore carried forward exactly the way `--reindex` carries it:
+    # measured from the tiles that are actually on disk, with the two values a
+    # JPEG cannot give back (`quality`, `detailGain`) taken from the record that
+    # is already there, and the carried record says which bake it came from.
+    for layer in carried_layers(out, layers):
+        prev_rec = prev_layers.get(layer, {})
+        rec = layer_record(
+            out, layer, prev_rec.get('quality'),
+            prev_rec.get('detailGain', None if layer == 'paper' else 0.4))
+        if prev_manifest.get('generatedAt'):
+            rec['carriedFrom'] = prev_manifest['generatedAt']
+        m['layers'][layer] = rec
     sha = Path('data/raw/sha256.json')
     m['sources'] = json.loads(sha.read_text()) if sha.exists() else []
     m['timings']['bakeSeconds'] = round(time.time() - t0, 1)
@@ -390,7 +435,7 @@ def run(detail: str, color: str, layers=('paper', 'photo'), top: int = 6,
     return baked + derived
 
 
-def reindex(out_dir: str = OUT_DEFAULT, layers=('paper', 'photo'),
+def reindex(out_dir: str = OUT_DEFAULT, layers=PRODUCT_LAYERS,
              quiet: bool = False) -> int:
     """Rewrite manifest.json from the tiles on disk. Writes no tiles, reads no
     sources, deletes nothing -- the way to correct a manifest without a bake.
@@ -467,7 +512,7 @@ def main() -> int:
                          'bakes nothing, deletes nothing')
     a = ap.parse_args()
     if a.reindex:
-        layers = ('paper', 'photo') if a.layer == 'both' else (a.layer,)
+        layers = PRODUCT_LAYERS if a.layer == 'both' else (a.layer,)
         reindex(a.out, layers)
         return 0
     if not 0 <= a.top <= grid.MAX_TOP_LEVEL:

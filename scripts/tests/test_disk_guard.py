@@ -454,6 +454,68 @@ def contract_and_gazetteer_radius_m() -> float:
     return float(m.group(1))
 
 
+def test_baking_one_layer_keeps_the_other_layers_record(tmp_path):
+    """MUST FIX 5, end to end: `run()` rebuilds the manifest from
+    `base_manifest()`, whose `layers` starts EMPTY, so a one-layer run used to
+    publish a manifest with no `layers.paper` at all. `assets.ts` validates BOTH
+    layer records and returns null for the whole file if either is missing, so
+    following the disk refusal's own advice (`--layer photo`) bricked the app with
+    "manifest.json is not compatible with this build".
+
+    Bakes both layers, then re-runs for ONE layer, and asserts the other layer's
+    record is still there, still describes the tiles on disk, and claims no writes
+    this run did not make.
+    """
+    import bake as bake_mod
+    detail = fake_raster(tmp_path / 'detail.tif', count=1)
+    color = fake_raster(tmp_path / 'color.tif', count=4)
+    out = tmp_path / 'tiles'
+    bake_mod.run(detail=detail, color=color, layers=('paper', 'photo'), top=1,
+                 quality=85, band_rows=512, k=0.4, out_dir=str(out), force=True,
+                 quiet=True)
+    both = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert set(both['layers']) == {'paper', 'photo'}
+    paper_before = both['layers']['paper']
+
+    # Now the command the refusal message advises: one layer only.
+    bake_mod.run(detail=detail, color=color, layers=('photo',), top=1,
+                 quality=85, band_rows=512, k=0.4, out_dir=str(out), quiet=True)
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert set(m['layers']) == {'paper', 'photo'}, \
+        'a one-layer bake deleted the other layer from the manifest'
+    # The carried record still measures the tree it describes.
+    assert m['layers']['paper']['top'] == paper_before['top'] == 1
+    assert m['layers']['paper']['tiles'] == paper_before['tiles']
+    assert m['layers']['paper']['bytes'] == paper_before['bytes']
+    assert m['layers']['paper']['quality'] == 85      # carried, not invented
+    assert m['layers']['paper']['detailGain'] is None  # paper is the raw band
+    # ...and it does not claim writes this run never made (the reindex rule).
+    assert 'baked' not in m['layers']['paper'] and 'derived' not in m['layers']['paper']
+    assert m['layers']['paper']['carriedFrom'] == both['generatedAt']
+    # The layer that WAS baked still reports its own writes honestly: without
+    # `--force` its L1 tiles already exist, so this run bakes none and re-encodes
+    # the two parents -- the resume path the refusal message's advice takes.
+    assert m['layers']['photo']['baked'] == 0
+    assert m['layers']['photo']['derived'] == 2
+    assert m['layers']['photo']['top'] == 1
+    assert 'carriedFrom' not in m['layers']['photo'], \
+        'the layer this run baked must not be marked as carried'
+    # Levels describe the whole delivered tree, not just the baked layer.
+    assert [lv['L'] for lv in m['levels']] == [0, 1]
+
+    # The app's own gate: `parse_manifest_app` is the transcription of
+    # src/lib/assets.ts used throughout this section, and it must accept.
+    # `sources` is read from data/raw/sha256.json, which is git-ignored and only
+    # exists after `npm run fetch`, so the shipped record stands in for it here;
+    # every field the finding is about is the one the bake just wrote.
+    if not m['sources']:
+        m['sources'] = json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8'))[
+            'sources']
+    parsed = parse_manifest_app(m)
+    assert parsed is not None, 'assets.ts would refuse the manifest this bake wrote'
+    assert parsed['layers'] == {'paper': {'top': 1}, 'photo': {'top': 1}}
+
+
 def test_reindex_rebuilds_from_disk_and_keeps_the_gate_verdicts(tmp_path,
                                                                monkeypatch,
                                                                capsys):
