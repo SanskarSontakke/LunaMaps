@@ -81,6 +81,134 @@ def test_parent_equals_box_average_of_children(sources, tmp_path):
     assert int(np.abs(parent.astype(np.int32) - on_disk.astype(np.int32)).max()) <= 2
 
 
+# ------------------------------------------------------------------ MUST FIX 3
+# The test above is a CONSISTENCY check: it re-derives its expectation with
+# `derive.parent_from_children`, the function under test, so a quadrant swap in
+# `derive.py` (`nw, ne, sw, se`) or a wrong `reshape` axis order leaves it green.
+# Spec §5.3 asked for BOTH the exact tile pixel values AND the averaging
+# identity, and neither was asserted anywhere in this suite. The two tests below
+# hand-write both expectations from the source definition instead.
+
+def _kid(a, b, c, d):
+    """A 4x4 child built from four *uniform* 2x2 sub-blocks.
+
+    That layout is what makes the expectation hand-writable: every parent pixel
+    is the average of four equal values, so it is exactly that value -- no
+    rounding, no clipping, no arithmetic to re-derive. `a`..`d` are unique across
+    all four children (1..16), so the parent matrix is a permutation-sensitive
+    fingerprint of the quadrant order.
+    """
+    return np.array([[a, a, b, b], [a, a, b, b],
+                     [c, c, d, d], [c, c, d, d]], np.uint8)
+
+
+NW, NE, SW, SE = _kid(1, 2, 3, 4), _kid(5, 6, 7, 8), _kid(9, 10, 11, 12), \
+    _kid(13, 14, 15, 16)
+# Hand-written, from `nw, ne, sw, se = kids` and a 2x2 box average of the stitched
+# 8x8 image. Nothing here calls derive.
+EXPECTED_PARENT = np.array([[1, 2, 5, 6],
+                            [3, 4, 7, 8],
+                            [9, 10, 13, 14],
+                            [11, 12, 15, 16]], np.uint8)
+
+
+def test_parent_is_the_hand_written_quadrant_matrix_not_a_recomputed_one():
+    """`parent_from_children` must place nw top-left, ne top-right, sw bottom-left
+    and se bottom-right, and average 2x2 blocks -- each expectation written by hand
+    above, so the function is not its own oracle."""
+    assert np.array_equal(derive.parent_from_children([NW, NE, SW, SE]),
+                          EXPECTED_PARENT)
+    # The fixture discriminates order: every one of these is a plausible mistake
+    # (transposed quadrants, a vertical or horizontal mirror, a swapped pair) and
+    # none of them may produce the hand-written matrix.
+    for wrong_order, label in [
+        ([NW, SW, SE, NE], 'rotated quadrants'),
+        ([NE, NW, SE, SW], 'mirrored east-west'),
+        ([SW, SE, NW, NE], 'mirrored north-south'),
+        ([SE, SW, NE, NW], 'rotated 180'),
+        ([NW, NE, SE, SW], 'sw and se swapped'),
+    ]:
+        got = derive.parent_from_children(wrong_order)
+        assert not np.array_equal(got, EXPECTED_PARENT), f'{label} passed'
+    # And a transposed *assembly* (concatenating along the other axis first) is a
+    # different image, so the axis order in the concat is being checked too.
+    transposed = np.concatenate([np.concatenate([NW, SW], axis=1),
+                                 np.concatenate([NE, SE], axis=1)], axis=0)
+    assert not np.array_equal(transposed,
+                              np.concatenate([np.concatenate([NW, NE], axis=1),
+                                              np.concatenate([SW, SE], axis=1)],
+                                             axis=0))
+
+
+def test_parent_averages_each_colour_channel_separately():
+    """The ndim==3 branch of `parent_from_children` (the `photo` layer's RGB) has
+    the same hand-written expectation, per channel, and must not collapse,
+    reorder or reshape the channel axis. Each child carries a per-channel offset
+    (0, 1, 2, 3) so a channel mix-up changes which matrix comes out, while the
+    block-uniform layout keeps every parent pixel exact."""
+    kids = [np.stack([k + np.uint8(0), k + np.uint8(1), k + np.uint8(2)], axis=-1)
+            for k in (NW, NE, SW, SE)]
+    got = derive.parent_from_children(kids)
+    assert got.shape == (4, 4, 3)
+    for ch in range(3):
+        assert np.array_equal(got[..., ch], EXPECTED_PARENT + np.uint8(ch)), \
+            f'channel {ch} is not the hand-written parent'
+
+
+def test_baked_tile_pixels_and_the_derived_parent_are_exact(tmp_path):
+    """Exact pixel values, end to end, asserted against the SOURCE definition
+    rather than against a function in this repo.
+
+    The fixture raster is sized to the L1 world grid (2048 x 1024), so the level
+    read is 1:1 and `paper` -- the raw detail band, no composite, no blur -- has
+    to reproduce it DN for DN. Its value pattern is a banded gradient
+    (20 + 24 * columnBand + 3 * rowBand, bands 256 x 128 px) chosen so that no
+    2x2 parent block can straddle a band edge: a block starts at an even world
+    column/row and the bands are even and 2-aligned, so every parent pixel is the
+    average of four equal values, i.e. exactly the source value two pixels over.
+    A vertical flip, a 180 deg longitude rotation or a quadrant swap in `derive`
+    each changes at least one of the pixels asserted."""
+    import bake
+    W, H = grid.world_px_width(1), grid.world_px_height(1)
+    assert (W, H) == (2048, 1024), (W, H)
+    col_band = np.arange(W) // 256
+    row_band = (np.arange(H) // 128)[:, None]
+    detail = (20 + 24 * col_band + 3 * row_band).astype(np.uint8)
+    colour = np.dstack([np.full((H, W), v, np.uint8)
+                        for v in (190, 170, 150, 255)])
+    d = write_raster(tmp_path / 'detail.tif', detail)
+    c = write_raster(tmp_path / 'colour.tif', colour)
+    out = tmp_path / 'tiles'
+    bake.run(detail=d, color=c, layers=('paper',), top=1, quality=100,
+             band_rows=1024, k=None, out_dir=str(out), force=True, quiet=True)
+
+    def source_value(row, col):
+        """The DN the contract says world pixel (row, col) of the L1 grid holds.
+        Accepts broadcastable row/column arrays."""
+        return (20 + 24 * (col // 256) + 3 * (row // 128)).astype(np.uint8)
+
+    # L1: every tile, at columns and rows that are not near a band edge, is the
+    # source exactly (equal arrays, not "within a tolerance").
+    idx = np.arange(4, 508)
+    for y in range(grid.level_rows(1)):
+        for x in range(grid.level_cols(1)):
+            im = np.array(Image.open(out / 'paper' / '1' / str(x) / f'{y}.jpg'))
+            want = source_value(y * 512 + idx[:, None], x * 512 + idx[None, :])
+            assert np.array_equal(im[np.ix_(idx, idx)], want), \
+                f'L1 tile ({x},{y}) is not the source pixel for pixel'
+
+    # L0: the parent derived from those tiles, at the same hand-written values.
+    # A parent pixel (r, c) of tile (tx, ty) is world L0 (ty*512+r, tx*512+c),
+    # i.e. world L1 (2*(ty*512+r), 2*(tx*512+c)).
+    for y in range(grid.level_rows(0)):
+        for x in range(grid.level_cols(0)):
+            im = np.array(Image.open(out / 'paper' / '0' / str(x) / f'{y}.jpg'))
+            want = source_value(2 * (y * 512 + idx[:, None]),
+                                2 * (x * 512 + idx[None, :]))
+            assert np.array_equal(im[np.ix_(idx, idx)], want), \
+                f'L0 parent tile ({x},{y}) is not the box average of its children'
+
+
 def test_seam_is_continuous_across_the_antimeridian(sources, tmp_path):
     """The dark band straddles lon=+-180, so both tiles touching the seam must
     read the same mean at their facing edges. A non-periodic blur would differ."""
