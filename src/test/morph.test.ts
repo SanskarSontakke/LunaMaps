@@ -4,13 +4,17 @@ import {
   MAX_H,
   MIN_H,
   MORPH_DEADLINE_MS,
+  MORPH_QUEUE_DEADLINE_MS,
   MORPH_SECONDS,
   MorphIncompleteError,
+  MorphQueueTimeoutError,
   clampHeight,
   preserveState,
   setMode,
   settleMode,
+  withQueueWatchdog,
   type CameraState,
+  type ModeChange,
 } from '@/lib/cesium/morph';
 import { MAX_H as MOON_MAX_H, MIN_H as MOON_MIN_H, baseColorFor } from '@/lib/cesium/moon';
 import type { Mode } from '@/types';
@@ -77,6 +81,36 @@ const snap: CameraState = {
   heading: 0,
   pitch: -Math.PI / 2,
 };
+
+/**
+ * A `document` for the pump and the watchdog, which both read
+ * `visibilityState` and register a `visibilitychange` listener (the hidden-tab
+ * timer clamp is why a listener is required at all). `show()` is how a test
+ * becomes visible again and asserts the re-arm.
+ */
+function stubTab(visibility: 'hidden' | 'visible' = 'hidden') {
+  const listeners: Array<() => void> = [];
+  const doc = {
+    visibilityState: visibility,
+    addEventListener: (name: string, fn: () => void) => {
+      if (name === 'visibilitychange') listeners.push(fn);
+    },
+    removeEventListener: (name: string, fn: () => void) => {
+      if (name === 'visibilitychange') {
+        const i = listeners.indexOf(fn);
+        if (i >= 0) listeners.splice(i, 1);
+      }
+    },
+  };
+  vi.stubGlobal('document', doc);
+  return {
+    listenerCount: () => listeners.length,
+    show() {
+      doc.visibilityState = 'visible';
+      listeners.forEach((fn) => fn());
+    },
+  };
+}
 
 function fakeViewer(opts: {
   mode: number;
@@ -226,7 +260,7 @@ describe('settleMode paints the globe base colour for the mode', () => {
     expect(baseColorFor('paper')).not.toEqual(baseColorFor('globe'));
     // End-to-end through the real entry point, not just `settleMode`: this fake
     // lands the morph on the first poll, so the deadline pump is never armed.
-    const viewer = morphableViewer({
+    const { viewer } = morphableViewer({
       start: Cesium.SceneMode.SCENE3D,
       morphLands: true,
       completeTo: Cesium.SceneMode.SCENE2D,
@@ -245,12 +279,18 @@ describe('settleMode paints the globe base colour for the mode', () => {
  * path depends on: morphToX leaves MORPHING (a hidden tab never advances the
  * tweens) and completeMorph lands wherever the *running* transition was headed —
  * which is not necessarily the mode we just asked for.
+ *
+ * It also counts the two render entry points, because that distinction IS the
+ * bug this file pins: morph tweens advance only under `Scene.initializeFrame()`,
+ * whose only caller in the render path is `CesiumWidget.render()`. `scene.render`
+ * is here solely so a test can prove the pump no longer calls it.
  */
 function morphableViewer(opts: {
   start: number;
   morphLands: boolean;
   completeTo: number;
 }) {
+  const stats = { sceneRender: 0, widgetRender: 0, completeMorph: 0, requestRender: 0 };
   const scene = {
     mode: opts.start,
     isDestroyed: () => false,
@@ -263,16 +303,26 @@ function morphableViewer(opts: {
       if (opts.morphLands) scene.mode = Cesium.SceneMode.SCENE3D;
     },
     completeMorph: () => {
+      stats.completeMorph += 1;
       scene.mode = opts.completeTo;
     },
-    requestRender: () => {},
-    render: () => {},
+    requestRender: () => {
+      stats.requestRender += 1;
+    },
+    render: () => {
+      stats.sceneRender += 1;
+    },
     screenSpaceCameraController: { enableTilt: true },
     globe: { baseColor: 'untouched' as unknown as Cesium.Color },
   };
   const viewer = {
     isDestroyed: () => false,
     scene,
+    cesiumWidget: {
+      render: () => {
+        stats.widgetRender += 1;
+      },
+    },
     camera: {
       positionCartographic: { longitude: 0.41, latitude: 0.011, height: 2e5 },
       heading: 0,
@@ -280,7 +330,7 @@ function morphableViewer(opts: {
       setView: () => {},
     },
   };
-  return viewer as unknown as Cesium.Viewer;
+  return { viewer: viewer as unknown as Cesium.Viewer, stats };
 }
 
 async function setModeThroughDeadline(viewer: Cesium.Viewer, mode: Mode) {
@@ -291,8 +341,10 @@ async function setModeThroughDeadline(viewer: Cesium.Viewer, mode: Mode) {
     (value) => ({ ok: true as const, value }),
     (error: unknown) => ({ ok: false as const, error }),
   );
-  // The pump re-arms a 50 ms timer per poll; run the whole 15 s deadline out.
-  await vi.advanceTimersByTimeAsync(MORPH_DEADLINE_MS + 1_000);
+  // The pump re-arms a 50 ms timer per poll; run the whole 15 s deadline out,
+  // plus the queue watchdog's own budget so a request that never even started
+  // gets its chance to be judged by the deadline rather than by the queue.
+  await vi.advanceTimersByTimeAsync(MORPH_DEADLINE_MS + MORPH_QUEUE_DEADLINE_MS);
   return run;
 }
 
@@ -304,9 +356,9 @@ describe('the deadline path is reachable through setMode and reported honestly',
 
   it('resolves with a forced (non-animated) outcome when completeMorph lands the mode', async () => {
     vi.useFakeTimers();
-    // A hidden tab: the pump takes the scene.render() branch, which needs `document`.
-    vi.stubGlobal('document', { visibilityState: 'hidden' });
-    const viewer = morphableViewer({
+    // A hidden tab: the pump takes the widget-render branch, which needs `document`.
+    stubTab('hidden');
+    const { viewer } = morphableViewer({
       start: Cesium.SceneMode.SCENE3D,
       morphLands: false,
       completeTo: Cesium.SceneMode.SCENE2D,
@@ -319,7 +371,7 @@ describe('the deadline path is reachable through setMode and reported honestly',
 
   it('REJECTS with MorphIncompleteError when even completeMorph leaves the wrong mode', async () => {
     vi.useFakeTimers();
-    vi.stubGlobal('document', { visibilityState: 'hidden' });
+    stubTab('hidden');
     // What this pins is the CONTRACT: a wait that ends with the scene still in the
     // wrong mode must reject, not resolve as success — the dead error path the
     // review flagged was dead because the old wait minted success unconditionally.
@@ -327,7 +379,7 @@ describe('the deadline path is reachable through setMode and reported honestly',
     // own completion is gated on an installed `_completeMorph`; see
     // docs/superpowers/specs/verify-10.md for exactly what is proven here and what
     // is only reasoned from Cesium's source).
-    const viewer = morphableViewer({
+    const { viewer } = morphableViewer({
       start: Cesium.SceneMode.MORPHING,
       morphLands: false,
       completeTo: Cesium.SceneMode.SCENE3D,
@@ -335,5 +387,156 @@ describe('the deadline path is reachable through setMode and reported honestly',
     const out = await setModeThroughDeadline(viewer, 'paper');
     expect(out.ok).toBe(false);
     expect((out as { error: unknown }).error).toBeInstanceOf(MorphIncompleteError);
+  });
+
+  /**
+   * MUST FIX 1, the pump itself. In Cesium 1.146 the morph tweens are advanced
+   * only by `Scene.initializeFrame()`, and `Scene.prototype.render` never calls
+   * it — so a hidden tab that pumps `scene.render(now)` keeps `scene.mode` at
+   * MORPHING forever and only ever exits through the 15 s jump-cut. The pump has
+   * to go through the widget, which is `initializeFrame()` + `clock.tick()` +
+   * `scene.render(time)`. These two assertions pin which entry point is called;
+   * whether the tween then really lands is a browser fact Task 18 still owes.
+   */
+  it('hidden-tab pump drives CesiumWidget.render(), the frame that updates the tweens', async () => {
+    vi.useFakeTimers();
+    stubTab('hidden');
+    const { viewer, stats } = morphableViewer({
+      start: Cesium.SceneMode.SCENE3D,
+      morphLands: false,
+      completeTo: Cesium.SceneMode.SCENE2D,
+    });
+    await setModeThroughDeadline(viewer, 'paper');
+    expect(stats.widgetRender).toBeGreaterThan(0);
+  });
+
+  it('hidden-tab pump never calls scene.render(): that is the pump that did nothing', async () => {
+    vi.useFakeTimers();
+    stubTab('hidden');
+    const { viewer, stats } = morphableViewer({
+      start: Cesium.SceneMode.SCENE3D,
+      morphLands: false,
+      completeTo: Cesium.SceneMode.SCENE2D,
+    });
+    await setModeThroughDeadline(viewer, 'paper');
+    expect(stats.sceneRender).toBe(0);
+    // And the mode really did not land on its own, which is why the fallback is
+    // what reports it: the fake only leaves MORPHING when forced.
+    expect(stats.completeMorph).toBe(1);
+  });
+
+  it('a visibilitychange re-pumps immediately instead of waiting for the clamped timer', async () => {
+    vi.useFakeTimers();
+    const tab = stubTab('hidden');
+    const { viewer, stats } = morphableViewer({
+      start: Cesium.SceneMode.SCENE3D,
+      morphLands: false,
+      completeTo: Cesium.SceneMode.SCENE2D,
+    });
+    const run = setMode(viewer, 'paper');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(stats.widgetRender).toBeGreaterThan(0);
+    // Becoming visible re-pumps synchronously: no timer is advanced here, so the
+    // only thing that can move a counter is the `visibilitychange` handler. The
+    // visible branch asks Cesium's own loop for a frame (`scene.requestRender`).
+    const before = stats.requestRender;
+    tab.show();
+    expect(stats.requestRender).toBeGreaterThan(before);
+    // Landing the mode on a later poll settles normally, and the listener is
+    // gone again — a leaked `visibilitychange` handler would re-pump forever.
+    await vi.advanceTimersByTimeAsync(MORPH_DEADLINE_MS + 1_000);
+    expect((await run).forced).toBe(true);
+    expect(tab.listenerCount()).toBe(0);
+  });
+});
+
+/**
+ * MUST FIX 1, the queue watchdog. `setMode` chains requests, so a frozen
+ * head-of-queue is never even *started* and its own deadline can only release
+ * itself — everything behind it would hang silently forever. The watchdog bounds
+ * a request from the moment it was QUEUED and rejects with a
+ * `MorphIncompleteError` subclass, which is what makes the failure loud (latch
+ * rollback + `role="alert"`) and, above all, recoverable.
+ */
+describe('the morph queue has a wall-clock watchdog', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const landed = (mode: Mode): ModeChange => ({
+    mode,
+    applied: true,
+    animated: true,
+    forced: false,
+  });
+
+  it('the budget is bigger than one morph deadline: it counts the request ahead', () => {
+    expect(MORPH_QUEUE_DEADLINE_MS).toBeGreaterThan(2 * MORPH_DEADLINE_MS);
+  });
+
+  it('a request that never reaches the front of the queue rejects loudly', async () => {
+    vi.useFakeTimers();
+    stubTab('hidden');
+    const frozen = new Promise<ModeChange>(() => {});
+    const guarded = withQueueWatchdog('paper', frozen).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await vi.advanceTimersByTimeAsync(MORPH_QUEUE_DEADLINE_MS + 1);
+    const out = await guarded;
+    expect(out.ok).toBe(false);
+    const error = (out as { error: unknown }).error;
+    // The rollback path keys off MorphIncompleteError, so the subclass is the
+    // whole contract: loud for the UI, distinguishable in the message.
+    expect(error).toBeInstanceOf(MorphIncompleteError);
+    expect(error).toBeInstanceOf(MorphQueueTimeoutError);
+    expect((error as Error).message).toContain('front of the morph queue');
+  });
+
+  it('a request that settles is never touched by the watchdog, and stops its timer', async () => {
+    vi.useFakeTimers();
+    stubTab('hidden');
+    const guarded = withQueueWatchdog('paper', Promise.resolve(landed('paper')));
+    expect(await guarded).toEqual(landed('paper'));
+    // Well past the budget with a settled request: firing the watchdog now would
+    // be a double-settle, and the timer/listener are what `stop()` must release.
+    await vi.advanceTimersByTimeAsync(MORPH_QUEUE_DEADLINE_MS * 2);
+    expect(await guarded).toEqual(landed('paper'));
+  });
+
+  it('a clamped timer cannot hide the deadline: becoming visible re-checks it', async () => {
+    vi.useFakeTimers();
+    const tab = stubTab('hidden');
+    const frozen = new Promise<ModeChange>(() => {});
+    const guarded = withQueueWatchdog('paper', frozen, 10_000).catch(
+      (e: unknown) => e as Error,
+    );
+    // Burn the budget on the CLOCK only — the timer has not fired, which is the
+    // hidden-tab clamp in miniature. Nothing has rejected yet.
+    await vi.advanceTimersByTimeAsync(9_000);
+    vi.setSystemTime(Date.now() + 2_000);
+    tab.show();
+    expect(await guarded).toBeInstanceOf(MorphQueueTimeoutError);
+  });
+
+  it('the watchdog releases the queue, so the request behind a frozen one still runs', async () => {
+    vi.useFakeTimers();
+    stubTab('hidden');
+    // The same composition `setMode` builds: a head that never settles, and a
+    // follower chained off the GUARDED promise, because the guarded promise is
+    // what the queue stores.
+    const guarded = withQueueWatchdog('paper', new Promise<ModeChange>(() => {}));
+    const follower = guarded.then(
+      () => landed('globe'),
+      () => landed('globe'),
+    );
+    const out = follower.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await vi.advanceTimersByTimeAsync(MORPH_QUEUE_DEADLINE_MS + 1);
+    // A deadlock leaves this pending; the contract is that it settles.
+    expect(await out).toEqual({ ok: true, value: landed('globe') });
   });
 });
