@@ -322,7 +322,31 @@ evidence in §4.1:
 | 11:00 | 10,922 | 5,888 | 23/32 bands |
 | 11:25 | 10,922 | **10,922** | manifest rewritten |
 
+**Monitoring caveat — a false `BAKE PROCESS GONE`.** The waiter that polled for
+this run logged `BAKE PROCESS GONE at 08:59:24` (`work/bake-waiter.log`), but the
+bake was alive throughout: the timeline above has `paper` at 2,304 and rising at
+08:52, and the process table below lists both interpreters. The waiter's own
+query failed first — `work/bake-waiter.log` opens with a PowerShell
+`TerminatorExpectedAtEndOfString` parser error, after which its process lookup
+returned nothing and the script read that empty result as "gone". The lesson for
+a future interrupted bake: a waiter's "gone" verdict is only as trustworthy as
+its last *successful* query, so never conclude the bake died from the waiter
+alone — corroborate against tile-count growth between polls, which is exactly
+what §4.0 did before deciding to let the run finish rather than restart it.
+
 ### 4.1 Wall clock
+
+**Provenance of this transcript.** This block is the delivered bake's own stdout,
+copied verbatim from `work/smoke/tierA.log`. This session did **not** execute the
+`time npm run bake` command itself: the `--force` bake had been launched in the
+earlier session and was still running on arrival (§4.0), and what this session
+observed was that process completing and writing its log. The `$ time …` prompt
+line and the `real` line are therefore reproduced from `work/smoke/tierA.log`,
+not re-measured here; the bake cannot be re-run to regenerate them (the sources
+would be re-decoded for three hours), so the block is marked as copied rather
+than passed off as a fresh invocation. The duration reconciliation below is
+anchored to `generatedAt`, which the *same* completed run wrote into
+`manifest.json`.
 
 ```
 $ time npm run bake -- --top 6 --layer both --band-rows 1024 --force
@@ -337,9 +361,17 @@ baked 21844 tiles in 10680.5s -> public\tiles
 real	178m3.232s
 ```
 
-**2 h 58 m 03 s** (`real 178m3.232s`, `timings.bakeSeconds = 10680.5`; process
-08:27:25 → manifest stamped 11:25:35 IST = 2 h 58 m 10 s). Three independent
-records of the same duration.
+**2 h 58 m 03 s** headline, taken from `real 178m3.232s` = 2 h 58 m 03.2 s. Three
+independent records of the same duration, agreeing to a few seconds: `real
+178m3.232s` = 2 h 58 m 03.2 s (the `time` wrapper around npm + interpreter +
+bake); `timings.bakeSeconds = 10680.5` s = 2 h 58 m 00.5 s (the process's own
+wall clock, which excludes startup so it reads a hair under `real`); and the
+process created 08:27:25 → the manifest stamped `generatedAt =
+2026-10-07T05:55:25+00:00` = 11:25:25 IST, a span of 2 h 58 m 00 s. (An earlier
+draft of this line read the stamp as `11:25:35` and the span as 2 h 58 m 10 s —
+a ~10 s overstatement; the committed `generatedAt` is at `:25`, so the third
+record is 2 h 58 m 00 s, and the ~3 s gap to `real` is startup, not run time.
+The 2 h 58 m 03 s headline stands.)
 
 Band arithmetic: L6 world height is 32,768 px, so `--band-rows 1024` is 32 bands
 per layer, each 2 tile rows = 256 tiles. Observed rates: paper 150–195 s/band,
@@ -406,13 +438,22 @@ layer's chroma averages out.
 
 ### 4.4 How the measurement compares with the plan's estimate
 
+All percentages below use **the measurement (927,406,556 B = 0.927 GB) as the
+single denominator**, stated once as the rule and applied consistently; the two
+earlier figures ("7% below the range", "36% low") were against *different* bases
+and are reconciled explicitly here.
+
 - Spec §3 / plan: "Tier A, two layers: ~21,844 files, **~1.0–1.8 GB**". The file
-  count is **exact**. The bytes are **0.93 GB measured — 7% below the low end of
-  the quoted range**, so §3's estimate is now replaced by 927,406,556 B
-  (0.927 GB, 0.864 GiB): the quoted range sat 8–94% above the measurement.
+  count is **exact**. The bytes are **0.927 GB measured (0.864 GiB)**, so §3's
+  estimate is replaced by that figure. Against the measurement, the quoted range
+  sits **7.8% above at its low end and 94.1% above at its high end** (0.927 GB is
+  7.3% below the 1.0 GB low end — the same gap seen against the range instead of
+  the measurement, which is where the earlier "7%" came from).
 - The estimator in `bake.py` itself, whose numbers the disk guard actually uses,
-  predicted **0.68 GB** and therefore **under-called the real bake by 36%**. The
-  placeholders were individually wrong in opposite directions: `paper` 0.55
+  predicted **0.68 GB**, i.e. **26.7% below the measurement** (equivalently the
+  real bake came out 36.4% *above* the prediction — that alternative base is the
+  "36%" the earlier draft quoted, and both describe the same 247,364,202 B gap).
+  The placeholders were individually wrong in opposite directions: `paper` 0.55
   bits/px against 1.3191 measured (2.4× too low) and `photo` 1.35 against 1.2722
   (6% too high). The errors partly cancelled, which is exactly why a
   plausible-looking total hid a 2.4× error in one layer.
@@ -454,10 +495,14 @@ they are invariant to this change: measured B/A = 4.00, still passing.
 **No browser screenshot was taken by this session either, and none was
 possible.** `take_screenshot` on the in-app browser returned the same failure
 §3 quotes: `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE … viewport=0x0,
-visibilityState=hidden`. Independently, the brief's route to a screenshot —
-pointing `MoonMap.tsx` at `{layer, top}` — requires editing `src/`, which this
-task's constraints forbid. So **no Cesium-globe render was inspected**, and what
-follows is the numeric substitute the fallback allows, defined and run here:
+visibilityState=hidden`. The blocker is the missing visible surface, not scope:
+the brief's route to a screenshot — pointing `MoonMap.tsx` at `{layer, top}` —
+is a `src/` edit that §3 records as having been *done and then reverted*, so
+editing `src/` was available and was never the obstacle; it simply renders
+nothing watchable while the in-app tab holds a 0×0 viewport and Cesium never
+composites a frame. So **no Cesium-globe render was inspected**, and what
+follows is the numeric substitute the fallback allows, defined here and re-run
+for Task 17:
 `work/tierA_check.py`, which stitches the real tiles into a mosaic and scores
 them against `public/data/features.json` — the IAU gazetteer, an independent
 dataset that says where each maria and crater is.
@@ -472,7 +517,13 @@ masquerade as a wrap artefact.
 
 All seven named features and all four criteria, every layer and level checked —
 six runs, **54/54 verdicts PASS** (`lum` = mean luminance, `pct` = percentile of
-the mosaic):
+the mosaic). The full transcript of all six runs — including the 27 verdicts that
+until now had no retained evidence — is committed at
+[`tierA-check-transcript.txt`](tierA-check-transcript.txt) (`work/` itself is
+git-ignored). It was re-run for Task 17 on HEAD `6c3d038` against the unmodified
+`public/tiles` tree plus the copied-aside L2 smoke set: every luminance,
+percentile, orientation contrast, seam step and correlation value below
+reproduced, all 54 verdicts still PASS, and none failed to reproduce:
 
 | check | photo L2 (smoke, direct) | photo L2 (delivered, derived) | photo L3 | photo L4 | paper L2 | paper L3 |
 |---|---|---|---|---|---|---|
@@ -563,17 +614,29 @@ L2, L3 *and* L4.
    Tier A `--force` run was live and would have had its `paper` tree deleted. The
    smoke evidence is §2/§3 (first session) plus §4.6 re-run on the delivered
    pyramid and on the copied-aside L2 `photo` set.
-2. Step 2's browser screenshots were not possible (0×0 in-app viewport; editing
-   `src/` out of scope). Numeric substitute + direct image viewing in §4.6.
+2. Step 2's browser screenshots were not possible: the in-app tab is a 0×0
+   viewport with no visible surface, so no Cesium frame is composited to capture.
+   (Pointing `MoonMap.tsx` at a layer is a `src/` edit that §3 shows was made and
+   reverted — it was not withheld, it simply would not have rendered anything
+   watchable.) Numeric substitute + direct image viewing in §4.6.
 3. Step 3's literal `find public/tiles` command over-counts by the 10 probe
    tiles; see §4.2.
 4. `--band-rows 1024` was used as the brief specifies. The L6 world height is
    32,768 px, so 1024 gives 32 bands per layer; the brief's Step 1 `--band-rows
    512` for the L2 smoke run is unchanged from §2.
-5. No pipeline defect surfaced. `bake.py` was modified only in `BITS_PER_PIXEL`
-   (Step 4). `grid.py`, `composite.py`, `blur.py`, `labels.py`, `contract.py`
-   and `src/` were not touched, no tolerance was widened, and no assertion was
-   weakened.
+5. No pipeline defect surfaced, but one warning the delivered run printed is now
+   recorded here rather than omitted: a `rasterio NotGeoreferencedWarning` for
+   `lroc_color_poles.tif`, at `work/smoke/tierA.log` line 5. It is expected and
+   benign, not a defect — the SVS colour mosaic genuinely carries no GeoTIFF
+   geotransform, GCPs or RPCs, so rasterio hands back the identity matrix, which
+   is precisely the condition `contract.py` handles by *assigning* the grid
+   instead of reading it. That is why §0 and §2's dry run report the colour layer
+   as `76.0 px/deg from assigned`, and why `capabilities.drivers.color` records
+   `crs: None` over an identity `transform`. The detail JP2, which *is*
+   georeferenced, emitted no such warning. With that cause on the record:
+   `bake.py` was modified only in `BITS_PER_PIXEL` (Step 4); `grid.py`,
+   `composite.py`, `blur.py`, `labels.py`, `contract.py` and `src/` were not
+   touched, no tolerance was widened, and no assertion was weakened.
 6. Tests after the bake and the estimator update:
    `.venv/Scripts/python.exe -m pytest scripts/tests -q` → **106 passed**, no
    warnings; `npx vitest run` → **7 passed (7)**. vitest also prints a
@@ -606,4 +669,39 @@ L2, L3 *and* L4.
   is the procedure: check whether the process is still alive, read the `--force`
   semantics in `run()`, pin the code provenance against `git`, and remember that
   `derive_levels` fails loudly rather than silently on a partial top level.
+
+### 5.1 Status — landed in Task 17
+
+Every forward item above is now implemented in `scripts/bake.py` and pinned by
+`scripts/tests/test_disk_guard.py` (full suite: 168 passed):
+
+- **Stage 0 gates a real bake, not only `--dry-run`.** `main()` runs
+  `contract.assert_contract` over both sources before `--out` is created or,
+  under `--force`, deleted; a missing or wrong-grid source is a hard `exit 2`
+  refusal, not a printed "absent" followed by a green `continue`. No multi-hour
+  bake can start on an unverified grid.
+- **The disk guard measures the volume `--out` resolves to** (`free_bytes_at`
+  walks to the nearest existing ancestor and never creates the path), not the
+  shell's `cwd`.
+- **`baked` and `derived` are counted, printed and manifested separately**, so a
+  resume that re-encodes every parent but bakes nothing no longer reports writes
+  it did not make.
+- **`estimate()` renamed the pyramid-wide count** off the misleading
+  `tilesPerLayer` key (`tilesThroughTopPerLayer`, with `tilesAtTop` for the
+  single level), and `--band-rows 0` (or any non-positive, or non-multiple of
+  512) is a named argument error raised before `range()` is entered.
+
+**Tier B is opt-in and was NOT run.** `project_seconds(7, both, 1024)` puts it at
+**6.7–8.4 h** from the measured 150–200 s/band (the §5 "on the order of 6–12 h"
+band), on 128 bands (64/layer, double Tier A's 64) and 87,380 files, and the
+estimator puts its bytes at **3.71 GB — 4.00× the measured Tier A total** — for
+which the guard asks **5.56 GB free**. The controller's ruling keeps it unrun
+because it extrapolates to 6–12 hours for resolution the delivered L6
+(166.5 m/px, Gate G2-verified) does not need; `disk_refusal`/`main` quote the
+hours, the Tier A comparison, a cheaper single-layer subset command and an
+explicit "declining Tier B is a valid answer", so the cost is honest whether the
+answer is yes or no. The delivered `public/tiles/manifest.json` was corrected to
+list only the baked levels L0–L6 (finding 10) and ends with a trailing newline
+(finding 13), and its 54 §4.6 smoke verdicts are now backed by the committed
+[`tierA-check-transcript.txt`](tierA-check-transcript.txt) (finding 6).
 

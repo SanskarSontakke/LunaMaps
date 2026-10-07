@@ -157,7 +157,68 @@ def test_manifest_records_measured_numbers(sources, tmp_path):
     assert m['layers']['paper']['top'] == 0
     assert m['layers']['paper']['tiles'] == 2
     assert m['layers']['paper']['bytes'] > 0
-    assert m['levels'][6]['mPerPx'] == pytest.approx(166.6, abs=0.6)
+    # Finding 10 of Task 7/8 review: `levels` used to be `range(8)` -- the whole
+    # grid contract -- so a top=0 pyramid claimed L1..L7. It now lists exactly
+    # what was baked, and nothing else.
+    assert [lv['L'] for lv in m['levels']] == [0]
+    # The old `m['levels'][6]` index only worked because the list was the grid
+    # table, not the pyramid. The L6 resolution is still pinned, on the source
+    # of truth rather than on a manifest row that need not exist.
+    assert grid.m_per_px(6) == pytest.approx(166.571, abs=0.001)
+
+
+def test_manifest_lists_exactly_the_levels_the_pyramid_has(sources, tmp_path):
+    """A top=2 pyramid has L0/L1/L2 on disk and no L3, in the manifest and in
+    the directory tree alike."""
+    out = tmp_path / 'tiles'
+    import bake
+    import manifest
+    bake.run(**bake_kwargs(sources, out, layers=('photo',), top=2))
+    m = json.loads((out / 'manifest.json').read_text())
+    assert [lv['L'] for lv in m['levels']] == [0, 1, 2]
+    assert manifest.baked_levels(out, ('photo',)) == [0, 1, 2]
+    for lv in m['levels']:
+        assert lv['cols'] == grid.level_cols(lv['L'])
+        assert lv['rows'] == grid.level_rows(lv['L'])
+        assert lv['mPerPx'] == pytest.approx(grid.m_per_px(lv['L']), abs=0.01)
+    assert m['levels'][2]['mPerPx'] == pytest.approx(2665.14, abs=0.01)
+    # The whole grid table (L0..L7) is still available to a caller that wants
+    # it; it is simply no longer the default claim of a manifest.
+    full = manifest.base_manifest(range(grid.MAX_TOP_LEVEL + 1))
+    assert [lv['L'] for lv in full['levels']] == list(range(8))
+
+
+def test_manifest_bakes_and_derives_are_counted_separately(sources, tmp_path):
+    """Finding 3: one conflated `written` counter made a resume look like work.
+
+    top=1 on a 1024x512 synthetic source: 8 tiles at L1, 2 parents at L0.
+    """
+    out = tmp_path / 'tiles'
+    import bake
+    bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1))
+    m = json.loads((out / 'manifest.json').read_text())
+    assert m['layers']['photo']['baked'] == 8
+    assert m['layers']['photo']['derived'] == 2
+    assert m['layers']['photo']['tiles'] == 10
+    # A resume of the same tree bakes nothing at the top and re-encodes the
+    # parents it always re-encodes; the two numbers stay honest.
+    again = bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1,
+                                   force=False))
+    m2 = json.loads((out / 'manifest.json').read_text())
+    assert m2['layers']['photo']['baked'] == 0
+    assert m2['layers']['photo']['derived'] == 2
+    assert m2['layers']['photo']['tiles'] == 10
+    assert again == 2, 'return value is this call write count, baked + derived'
+
+
+def test_manifest_file_ends_with_a_newline(sources, tmp_path):
+    out = tmp_path / 'tiles'
+    import bake
+    bake.run(**bake_kwargs(sources, out, layers=('paper',), top=0))
+    raw = (out / 'manifest.json').read_bytes()
+    assert raw.endswith(b'}\n'), 'finding 13: no tracked text file should ' \
+                                 'end mid-line'
+
 
 
 def test_estimate_grows_superlinearly():

@@ -54,12 +54,6 @@
    "cols": 128,
    "rows": 64,
    "mPerPx": 166.57
-  },
-  {
-   "L": 7,
-   "cols": 256,
-   "rows": 128,
-   "mPerPx": 83.29
   }
  ],
  "sources": [
@@ -271,5 +265,27 @@
    "apollo11:Double": "23.4727,0.6738 albedo 28"
   },
   "failures": []
+ },
+ "reindex": {
+  "at": "2026-10-07T15:03:04+00:00",
+  "command": "npm run bake -- --reindex --out public/tiles",
+  "bakedAt": "2026-10-07T05:55:25+00:00",
+  "rebuilt": [
+   "levels (only those with tiles on disk)",
+   "layers.top",
+   "layers.tiles",
+   "layers.bytes",
+   "sources",
+   "capabilities"
+  ],
+  "carriedForward": [
+   "generatedAt",
+   "timings",
+   "layers.quality",
+   "layers.detailGain",
+   "albedoHistogram",
+   "geometryProof"
+  ],
+  "note": "written by --reindex, which counts the delivered tree and bakes nothing; `baked`/`derived` are per-run write counts and so only a real bake records them"
  }
 }

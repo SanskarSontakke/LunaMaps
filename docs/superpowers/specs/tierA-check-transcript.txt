@@ -1,0 +1,175 @@
+# tierA_check.py re-run transcript — all 54 verdicts of bake-log.md §4.6
+
+Task 17 finding 6: the delivered-pyramid smoke verdicts that §4.6 tabulates had
+no retained transcript, so `work/tierA_check.py` was re-run here and the FULL
+output of every run is captured below as a committed artifact. It is referenced
+from bake-log.md §4.6.
+
+Provenance
+  run:          2026-10-07T15:05:35Z (UTC) on Windows / Git Bash,
+                branch feat/lunar-map-explorer, HEAD 6c3d038
+  script:       work/tierA_check.py (git-ignored; sha256
+                d651781a32359caddcd610172d8f792df1c615a75b5ace823441f64bf059ba9b)
+  tiles:        public/tiles (the Tier A pyramid, UNMODIFIED — reading tiles is
+                not a bake) and work/smoke-l2-preserved (the L2 smoke set copied
+                aside before the Tier A --force, bake-log §4.0 item 5)
+  grid:         IAU gazetteer features from public/data/features.json
+  runs:         6 x 9 verdicts (7 named features + orientation + antimeridian
+                seam) = 54. The photo runs also print check 5 (mosaic-vs-source
+                correlation), which is a value, not a PASS/FAIL.
+
+Reproduction note
+  Every value in the six runs below was cross-checked against the §4.6 table
+  before this file was committed. All 54 verdicts reproduce PASS, and every
+  luminance, percentile, orientation contrast, seam step and correlation figure
+  agrees with the table (the delivered photo L2/L3/L4 correlations reproduce
+  0.9801 / 0.9824 / 0.9712, and their vertically-flipped counterparts
+  0.3047 / 0.2996 / 0.2916). No verdict failed to reproduce; none has been
+  papered over. The commands were run exactly as printed.
+
+================================================================================
+
+############### RUN: $ .venv/Scripts/python.exe work/tierA_check.py --root work/smoke-l2-preserved --layers photo --level 2
+
+=== photo L2: mosaic 4096x2048 mean=150.46 sd=36.01 min=11.9 max=255.0
+-- 1/2. named features (percentile of the whole mosaic) --
+  Mare Tranquillitatis       lum=  66.00 percentile=  0.5  expect DARK  -> PASS
+  Mare Imbrium               lum=  85.42 percentile=  4.9  expect DARK  -> PASS
+  Mare Crisium               lum=  84.92 percentile=  4.7  expect DARK  -> PASS
+  Mare Serenitatis           lum=  82.63 percentile=  4.0  expect DARK  -> PASS
+  Oceanus Procellarum        lum=  71.92 percentile=  1.2  expect DARK  -> PASS
+  Tycho                      lum= 211.86 percentile= 95.0  expect BRIGHT  -> PASS
+  Copernicus                 lum= 175.35 percentile= 79.5  expect BRIGHT  -> PASS
+-- 3. orientation from the gazetteer as a whole --
+  n mare=23 n crater=334
+  true coords     : mean z(mare)=-1.640 z(crater)=+0.033 contrast=-1.673
+  mirrored lat    : mean z(mare)=-0.519 z(crater)=-0.093 contrast=-0.427
+  -> PASS (upright: maria contrast is stronger at true lats)   margin=+1.246
+-- 4. antimeridian continuity --
+  rows 227..1820 (lat +70..-70), 32 px per side
+  internal edge steps: median=9.908 max=10.766 p90=10.698
+  seam step (lon +/-180) = 9.099  -> PASS (no streak)
+-- 5. mosaic vs the colour source directly --
+  corr(source, direct              ) = 0.8004
+  corr(source, vertically flipped  ) = 0.2419
+############### exit=0
+
+############### RUN: $ .venv/Scripts/python.exe work/tierA_check.py --root public/tiles --layers photo --level 2
+
+=== photo L2: mosaic 4096x2048 mean=150.79 sd=29.16 min=39.5 max=255.0
+-- 1/2. named features (percentile of the whole mosaic) --
+  Mare Tranquillitatis       lum=  65.86 percentile=  0.4  expect DARK  -> PASS
+  Mare Imbrium               lum=  85.85 percentile=  4.7  expect DARK  -> PASS
+  Mare Crisium               lum=  84.92 percentile=  4.5  expect DARK  -> PASS
+  Mare Serenitatis           lum=  83.63 percentile=  4.1  expect DARK  -> PASS
+  Oceanus Procellarum        lum=  71.92 percentile=  1.1  expect DARK  -> PASS
+  Tycho                      lum= 210.36 percentile= 99.5  expect BRIGHT  -> PASS
+  Copernicus                 lum= 174.93 percentile= 83.7  expect BRIGHT  -> PASS
+-- 3. orientation from the gazetteer as a whole --
+  n mare=23 n crater=334
+  true coords     : mean z(mare)=-2.022 z(crater)=+0.088 contrast=-2.110
+  mirrored lat    : mean z(mare)=-0.586 z(crater)=-0.096 contrast=-0.490
+  -> PASS (upright: maria contrast is stronger at true lats)   margin=+1.620
+-- 4. antimeridian continuity --
+  rows 227..1820 (lat +70..-70), 32 px per side
+  internal edge steps: median=9.272 max=9.934 p90=9.888
+  seam step (lon +/-180) = 8.742  -> PASS (no streak)
+-- 5. mosaic vs the colour source directly --
+  corr(source, direct              ) = 0.9801
+  corr(source, vertically flipped  ) = 0.3047
+############### exit=0
+
+############### RUN: $ .venv/Scripts/python.exe work/tierA_check.py --root public/tiles --layers paper --level 2
+
+=== paper L2: mosaic 4096x2048 mean=64.41 sd=36.37 min=0.0 max=255.0
+-- 1/2. named features (percentile of the whole mosaic) --
+  Mare Tranquillitatis       lum=  26.00 percentile= 11.8  expect DARK  -> PASS
+  Mare Imbrium               lum=  34.00 percentile= 17.8  expect DARK  -> PASS
+  Mare Crisium               lum=  34.00 percentile= 17.8  expect DARK  -> PASS
+  Mare Serenitatis           lum=  34.00 percentile= 17.8  expect DARK  -> PASS
+  Oceanus Procellarum        lum=  28.00 percentile= 12.8  expect DARK  -> PASS
+  Tycho                      lum= 106.50 percentile= 90.1  expect BRIGHT  -> PASS
+  Copernicus                 lum=  86.00 percentile= 77.4  expect BRIGHT  -> PASS
+-- 3. orientation from the gazetteer as a whole --
+  n mare=23 n crater=334
+  true coords     : mean z(mare)=-0.718 z(crater)=+0.148 contrast=-0.866
+  mirrored lat    : mean z(mare)=-0.133 z(crater)=+0.103 contrast=-0.236
+  -> PASS (upright: maria contrast is stronger at true lats)   margin=+0.630
+-- 4. antimeridian continuity --
+  rows 227..1820 (lat +70..-70), 32 px per side
+  internal edge steps: median=10.024 max=10.910 p90=10.864
+  seam step (lon +/-180) = 9.574  -> PASS (no streak)
+############### exit=0
+
+############### RUN: $ .venv/Scripts/python.exe work/tierA_check.py --root public/tiles --layers photo --level 3
+
+=== photo L3: mosaic 8192x4096 mean=150.77 sd=29.59 min=35.1 max=255.0
+-- 1/2. named features (percentile of the whole mosaic) --
+  Mare Tranquillitatis       lum=  67.86 percentile=  0.6  expect DARK  -> PASS
+  Mare Imbrium               lum=  86.13 percentile=  5.0  expect DARK  -> PASS
+  Mare Crisium               lum=  84.92 percentile=  4.5  expect DARK  -> PASS
+  Mare Serenitatis           lum=  84.13 percentile=  4.4  expect DARK  -> PASS
+  Oceanus Procellarum        lum=  69.92 percentile=  0.9  expect DARK  -> PASS
+  Tycho                      lum= 211.36 percentile= 99.4  expect BRIGHT  -> PASS
+  Copernicus                 lum= 179.43 percentile= 88.6  expect BRIGHT  -> PASS
+-- 3. orientation from the gazetteer as a whole --
+  n mare=23 n crater=334
+  true coords     : mean z(mare)=-2.025 z(crater)=+0.128 contrast=-2.153
+  mirrored lat    : mean z(mare)=-0.521 z(crater)=-0.099 contrast=-0.422
+  -> PASS (upright: maria contrast is stronger at true lats)   margin=+1.731
+-- 4. antimeridian continuity --
+  rows 455..3640 (lat +70..-70), 32 px per side
+  internal edge steps: median=7.848 max=9.168 p90=8.828
+  seam step (lon +/-180) = 7.647  -> PASS (no streak)
+-- 5. mosaic vs the colour source directly --
+  corr(source, direct              ) = 0.9824
+  corr(source, vertically flipped  ) = 0.2996
+############### exit=0
+
+############### RUN: $ .venv/Scripts/python.exe work/tierA_check.py --root public/tiles --layers paper --level 3
+
+=== paper L3: mosaic 8192x4096 mean=64.37 sd=38.43 min=0.0 max=255.0
+-- 1/2. named features (percentile of the whole mosaic) --
+  Mare Tranquillitatis       lum=  27.00 percentile= 13.5  expect DARK  -> PASS
+  Mare Imbrium               lum=  34.50 percentile= 20.1  expect DARK  -> PASS
+  Mare Crisium               lum=  34.00 percentile= 19.1  expect DARK  -> PASS
+  Mare Serenitatis           lum=  34.00 percentile= 19.1  expect DARK  -> PASS
+  Oceanus Procellarum        lum=  26.00 percentile= 13.1  expect DARK  -> PASS
+  Tycho                      lum=  97.50 percentile= 85.0  expect BRIGHT  -> PASS
+  Copernicus                 lum=  85.50 percentile= 76.6  expect BRIGHT  -> PASS
+-- 3. orientation from the gazetteer as a whole --
+  n mare=23 n crater=334
+  true coords     : mean z(mare)=-0.693 z(crater)=+0.136 contrast=-0.828
+  mirrored lat    : mean z(mare)=-0.155 z(crater)=+0.112 contrast=-0.266
+  -> PASS (upright: maria contrast is stronger at true lats)   margin=+0.562
+-- 4. antimeridian continuity --
+  rows 455..3640 (lat +70..-70), 32 px per side
+  internal edge steps: median=12.577 max=14.776 p90=14.149
+  seam step (lon +/-180) = 12.382  -> PASS (no streak)
+############### exit=0
+
+############### RUN: $ .venv/Scripts/python.exe work/tierA_check.py --root public/tiles --layers photo --level 4
+
+=== photo L4: mosaic 16384x8192 mean=150.74 sd=30.33 min=13.4 max=255.0
+-- 1/2. named features (percentile of the whole mosaic) --
+  Mare Tranquillitatis       lum=  67.86 percentile=  0.6  expect DARK  -> PASS
+  Mare Imbrium               lum=  84.13 percentile=  4.4  expect DARK  -> PASS
+  Mare Crisium               lum=  84.92 percentile=  4.5  expect DARK  -> PASS
+  Mare Serenitatis           lum=  82.63 percentile=  3.9  expect DARK  -> PASS
+  Oceanus Procellarum        lum=  68.92 percentile=  0.7  expect DARK  -> PASS
+  Tycho                      lum= 216.36 percentile= 99.3  expect BRIGHT  -> PASS
+  Copernicus                 lum= 180.42 percentile= 88.2  expect BRIGHT  -> PASS
+-- 3. orientation from the gazetteer as a whole --
+  n mare=23 n crater=334
+  true coords     : mean z(mare)=-1.998 z(crater)=+0.132 contrast=-2.130
+  mirrored lat    : mean z(mare)=-0.491 z(crater)=-0.097 contrast=-0.393
+  -> PASS (upright: maria contrast is stronger at true lats)   margin=+1.737
+-- 4. antimeridian continuity --
+  rows 910..7281 (lat +70..-70), 32 px per side
+  internal edge steps: median=7.705 max=8.849 p90=8.564
+  seam step (lon +/-180) = 7.146  -> PASS (no streak)
+-- 5. mosaic vs the colour source directly --
+  corr(source, direct              ) = 0.9712
+  corr(source, vertically flipped  ) = 0.2916
+############### exit=0
+
