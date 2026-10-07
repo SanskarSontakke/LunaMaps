@@ -65,6 +65,51 @@ describe('mode latch — a rejected morph stays retryable', () => {
     expect(latch).toEqual({ applied: 'globe', requested: 'paper' });
   });
 
+  /**
+   * MUST FIX 1: the two latch comments used to disagree — `MoonMap` said the
+   * second of a fast double-click "wins", while `requestMode` dedupes on
+   * `applied`, which drops it. The rule chosen is the one the code implements
+   * (and the one the previous round's rollback fix depends on): FIRST WINS.
+   * Pinning it here means the comment and the code can never drift apart again.
+   */
+  it('the FIRST of two different in-flight requests wins: the click back is dropped', () => {
+    const latch = createModeLatch('globe');
+    expect(requestMode(latch, 'paper')).toBe(true); // in flight
+    // Clicking Globe while morphing to Paper is NOT queued: `applied` is still
+    // 'globe' because the scene has provably not left it, so this is a no-op and
+    // the morph in flight lands in 'paper' — the first mode.
+    expect(requestMode(latch, 'globe')).toBe(false);
+    expect(latch).toEqual({ applied: 'globe', requested: 'paper' });
+    commitMode(latch, 'paper');
+    expect(latch).toEqual({ applied: 'paper', requested: 'paper' });
+    // And it stays retryable: once the scene is confirmed in paper, asking for
+    // globe is a real request again.
+    expect(requestMode(latch, 'globe')).toBe(true);
+  });
+
+  it('the same first-wins rule holds end-to-end through attemptMode', async () => {
+    const latch = createModeLatch('globe');
+    let release!: (change: ModeChange) => void;
+    const pending = new Promise<ModeChange>((resolve) => {
+      release = resolve;
+    });
+    const asked: Mode[] = [];
+    const morph = (mode: Mode) => {
+      asked.push(mode);
+      return pending;
+    };
+    const running = attemptMode(latch, 'paper', morph);
+    expect(await attemptMode(latch, 'globe', morph)).toEqual<ModeAttempt>({
+      status: 'noop',
+    });
+    expect(asked).toEqual(['paper']);
+    release({ mode: 'paper', applied: true, animated: true, forced: false });
+    expect((await running).status).toBe('committed');
+    // The dropped click never reached the morph, and the scene is in the first
+    // mode. A later click for the other mode is dispatched normally.
+    expect(latch).toEqual({ applied: 'paper', requested: 'paper' });
+  });
+
   it('committing a mode nobody asked for cannot strand the latch', () => {
     const latch = createModeLatch('globe');
     requestMode(latch, 'paper');

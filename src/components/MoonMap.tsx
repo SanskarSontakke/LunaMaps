@@ -10,7 +10,7 @@ import {
   type CameraState,
   type ModeChange,
 } from '@/lib/cesium/morph';
-import { attemptMode, createModeLatch } from '@/lib/cesium/modeLatch';
+import { attemptMode, createModeLatch, type ModeAttempt } from '@/lib/cesium/modeLatch';
 import { attachPicking } from '@/lib/cesium/picking';
 import { measureMPerPx } from '@/lib/cesium/scaleProbe';
 import { attachLabels, type LabelSet } from '@/lib/labels/entities';
@@ -63,8 +63,25 @@ declare global {
 export interface MoonHarness {
   camera(): CameraState | null;
   sceneMode(): string;
-  /** Resolves with how the morph actually finished (`forced` = jump-cut). */
+  /**
+   * The RAW morph: `setMode` on the live viewer, nothing else. It deliberately
+   * bypasses the mode latch, so it does not claim an intent, does not roll back
+   * on failure and does not move `sceneMode` — which is why `data-mode` on the
+   * canvas does NOT follow it. A live probe that watched `data-mode` after this
+   * call could (correctly) report `globe` while a morph to paper was running;
+   * that is a harness artifact, not an app bug. Task 18 sweeps should call
+   * `requestMode` instead, and keep this only for the case where the morph
+   * primitive itself is the thing under test.
+   */
   setMode(mode: Mode): Promise<ModeChange>;
+  /**
+   * The REAL mode-change path: the same state machine a toggle click runs
+   * (`attemptMode` on the component's own latch → morph → commit or roll back),
+   * so the latch, the `data-mode` tint, the toggle's selected state and the
+   * `role="alert"` panel all move exactly as they do for a human click, and the
+   * returned attempt says how it actually ended.
+   */
+  requestMode(mode: Mode): Promise<ModeAttempt>;
   setLayer(layer: LayerName): void;
   setCamera(
     lonDeg: number,
@@ -189,12 +206,17 @@ export default function MoonMap() {
   // toggle claiming a mode the scene never reached.
   const [sceneMode, setSceneMode] = useState<Mode>(DEFAULT_MODE);
   // The mode-request state machine: `applied` (confirmed) + `requested` (the
-  // morph currently in flight). The morph is async and `setMode`'s queue
-  // serialises requests, so a fast Paper/Globe double-click must enqueue both
-  // (the second one wins) — hence a separate intent ref rather than gating on
-  // `applied` alone. Crucially, a rejection ROLLS IT BACK (see the effect below):
-  // a `requested` left stranded on the failed mode dedupes every later request
-  // for it, which is how round 1 made the map un-switchable until reload.
+  // morph currently in flight). THE RULE, pinned by `src/test/modeLatch.test.ts`:
+  // a request is dropped when `mode` equals EITHER half of the latch, so during a
+  // Paper↔Globe double-click the FIRST click wins — the second click's mode is
+  // the one already held (`applied`, the scene has not left it yet) and is
+  // therefore a real no-op. The scene lands in the FIRST mode, not the second.
+  // (`setMode`'s own queue serialises whatever the latch lets through; the latch,
+  // not the queue, is what decides.) This is deliberate: re-firing the mode the
+  // live scene is still standing in would enqueue a morph the toggle is not
+  // showing, and the previous round's bug was a `requested` that survived a
+  // failure and deduped every later click — hence the rollback below, not a
+  // second-wins queue.
   const modeLatch = useRef(createModeLatch(DEFAULT_MODE));
   // Bumped by every mode request so the effect re-runs even when `mode` did not
   // change — i.e. the retry click after a failure, which React would otherwise
@@ -291,6 +313,43 @@ export default function MoonMap() {
   const requestModeChange = useCallback((next: Mode) => {
     setModeState(next);
     setModeNonce((n) => n + 1);
+  }, []);
+
+  // Render the outcome of ONE mode attempt. Extracted from the mode effect
+  // because the dev harness drives the same state machine through the same latch
+  // (see `requestMode` below) and must report it identically — otherwise a sweep
+  // that morphs through the harness would leave the toggle, the tint and the
+  // error panel describing a mode the scene never reached.
+  //
+  // Every branch leaves the latch holding the mode the scene is confirmed in, so
+  // the state written here is `reached`/`mode` from the attempt, never `mode`
+  // from the intent.
+  const applyModeAttempt = useCallback((out: ModeAttempt) => {
+    switch (out.status) {
+      case 'noop':
+        return;
+      case 'torn-down':
+        // Teardown (unmount): no scene to report on, and the next viewer build
+        // re-creates the latch. Neither an error nor a false success.
+        return;
+      case 'committed':
+        setSceneMode(out.mode);
+        setModeError(null);
+        // A jump-cut at the deadline is NOT an animated morph: say so, while
+        // still confirming the mode did change.
+        setModeNotice(out.forced ? forcedNotice(out.mode) : null);
+        return;
+      case 'failed':
+        // The morph never landed. `attemptMode` already rolled the latch back to
+        // the mode the scene really holds — otherwise `requested` stays on the
+        // failed mode and every later request for it is deduped until reload —
+        // and `reached` is what the toggle now shows, so it never claims a mode
+        // the scene did not reach.
+        setSceneMode(out.reached);
+        setModeNotice(null);
+        setModeError(`View mode change failed: ${out.message}`);
+        return;
+    }
   }, []);
 
   // Scale, measured through the live camera (see src/lib/cesium/scaleProbe.ts).
@@ -474,7 +533,29 @@ export default function MoonMap() {
       globalThis.__moonHarness = {
         camera: () => (viewer.isDestroyed() ? null : getCameraState(viewer)),
         sceneMode: () => MODE_NAMES[viewer.scene.mode] ?? String(viewer.scene.mode),
+        // The raw morph primitive: bypasses the latch, so `data-mode` does not
+        // follow it. Kept for testing `setMode` itself — see the interface docs.
         setMode: (m: Mode) => setMode(viewer, m),
+        // The real path, for sweeps that have to observe what a click does. The
+        // latch is claimed here exactly as the mode effect claims it, and the
+        // outcome is rendered by the same `applyModeAttempt`, so the toggle, the
+        // tint and the `role="alert"` panel move as they do for a human.
+        // Setting `mode` afterwards is what the effect would have done anyway,
+        // and it cannot double-morph: the latch now confirms the scene is already
+        // in that mode, so the effect's `attemptMode` returns `noop`.
+        requestMode: async (m: Mode): Promise<ModeAttempt> => {
+          if (viewer.isDestroyed()) {
+            return { status: 'torn-down', reached: modeLatch.current.applied };
+          }
+          const out = await attemptMode(modeLatch.current, m, (mm) =>
+            setMode(viewer, mm),
+          );
+          applyModeAttempt(out);
+          if (out.status !== 'noop') {
+            setModeState(out.status === 'committed' ? out.mode : out.reached);
+          }
+          return out;
+        },
         setLayer: (l: LayerName) => setLayer(viewer, l, topOf(manifest, l)),
         setCamera: (
           lonDeg: number,
@@ -564,34 +645,10 @@ export default function MoonMap() {
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
-    void attemptMode(modeLatch.current, mode, (m) => setMode(viewer, m)).then((out) => {
-      switch (out.status) {
-        case 'noop':
-          return;
-        case 'torn-down':
-          // Teardown (unmount): no scene to report on, and the next viewer build
-          // re-creates the latch. Neither an error nor a false success.
-          return;
-        case 'committed':
-          setSceneMode(out.mode);
-          setModeError(null);
-          // A jump-cut at the deadline is NOT an animated morph: say so, while
-          // still confirming the mode did change.
-          setModeNotice(out.forced ? forcedNotice(out.mode) : null);
-          return;
-        case 'failed':
-          // The morph never landed. `attemptMode` already rolled the latch back to
-          // the mode the scene really holds — otherwise `requested` stays on the
-          // failed mode and every later request for it is deduped until reload —
-          // and `reached` is what the toggle now shows, so it never claims a mode
-          // the scene did not reach.
-          setSceneMode(out.reached);
-          setModeNotice(null);
-          setModeError(`View mode change failed: ${out.message}`);
-          return;
-      }
-    });
-  }, [mode, modeNonce]);
+    void attemptMode(modeLatch.current, mode, (m) => setMode(viewer, m)).then(
+      applyModeAttempt,
+    );
+  }, [mode, modeNonce, applyModeAttempt]);
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !manifest) return;

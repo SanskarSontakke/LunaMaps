@@ -32,6 +32,14 @@ export const createModeLatch = (mode: Mode): ModeLatch => ({
  * false when it is a no-op: either the scene is already confirmed in that mode,
  * or that exact morph is already in flight (a double click must not enqueue the
  * same transition twice).
+ *
+ * WHICH REQUEST WINS a fast Paper/Globe double-click: the FIRST one. While a
+ * morph is in flight, `applied` still holds the mode the scene really stands in,
+ * so clicking that mode back is deduped (`latch.applied === mode`) and never
+ * enqueues — the scene lands in the mode the first click asked for. `MoonMap`'s
+ * latch comment and `modeLatch.test.ts` pin the same rule; an earlier draft of
+ * that comment claimed "the second one wins", which is the opposite of what this
+ * line does, and the second click was never queued.
  */
 export function requestMode(latch: ModeLatch, mode: Mode): boolean {
   if (latch.applied === mode || latch.requested === mode) return false;
