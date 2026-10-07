@@ -400,6 +400,10 @@ needed — the measurement is what settled it.
   re-hashes (measured: 2.1 s for the JP2, 0.4 s for the colour TIFF) and
   `--force` re-downloads. Records make this visible: `sha256Source: "recorded"`
   / `sha256Verified: false` versus `"computed"` / `true`.
+  *Superseded by §8: re-hashing is now the default and `--verify` no longer
+  exists; the escape hatch is `--skip-verify`. Both bullets above describe the
+  behaviour as shipped in Task 6 and are kept as the record of what was built
+  then.*
 * Stage 0: the loop in §3 must print `STAGE 0 OK` before any bake is trusted.
 * Probe scripts left in `work/` (git-ignored): `work/alpha_probe.py`,
   `work/alpha_full.py`.
@@ -443,3 +447,65 @@ socket on the main files.
 Tests: `scripts/tests/test_contract.py` 9 → 12 (canonicalisation, half-pixel and
 superseded-widening gates) and the new `scripts/tests/test_fetch.py` 24, so
 58 → **85 passed**, also under `-W error`. `npx vitest run`: **7 passed**.
+
+## 8. Task 6 follow-ups (STEP 0 of the Task 7/8 round, 2026-10-07)
+
+Two rulings from the controller, both measured against the real files. No source
+byte was re-downloaded: every role still reports `reused: true`.
+
+**(a) Always-verify is the default again.** The cached-digest reuse path (Minor 9)
+trusted name + size and wrote `sha256Verified: false` on every idempotent run.
+The read it avoided is cheap, so the default is inverted:
+
+```
+$ .venv/Scripts/python.exe -c "fetch_data.sha256(...) for each source"
+LRO_WAC_Mosaic_Global_303ppd_v3.jp2: 2.02 s  3c0bf3c5e34d52ec
+lroc_color_poles.tif: 0.43 s  15a6b44b26dc9631
+MOON_nomenclature_center_pts.zip: 0.02 s  ac7a198add0cd609
+total re-hash of 3,042,272,356 B: 2.48 s
+```
+
+`--verify` is **deleted** (it is now what happens by default); `--skip-verify` is
+the escape hatch and keeps the record honest (`sha256Source: "recorded"`,
+`sha256Verified: false`). A run with the new default:
+
+```
+$ npm run fetch                    # exit 0, 20.7 s wall (npm boot + 2.5 s of
+                                   # hashing + driver probe + 5 KB sidecar)
+skip  Lunar_LRO_LROC-WAC_Mosaic_global_100m_June2013.tif (only needed if the JP2 driver fails)
+```
+
+and `data/raw/sha256.json` afterwards — digests identical to §1's, which is the
+point of the check:
+
+```
+detail 2500331610  3c0bf3c5e34d52ec src=computed verified=True reused=True
+color  518090428   15a6b44b26dc9631 src=computed verified=True reused=True
+labels 23845070    ac7a198add0cd609 src=computed verified=True reused=True
+```
+
+Verification that never compares would not be verification, so a re-hash that
+disagrees with the digest recorded for the same role+name+size now ends the run
+(`SystemExit: … digest changed …`) instead of quietly relabelling 2.5 GB of
+imagery. Pinned by `test_a_rehash_that_disagrees_with_the_record_fails_loud`.
+
+**(b) Stage 0 verifies the file's own pixel size again.** Canonicalising
+`pxPerDeg = width/360` made `east`/`south` exact by construction, which silently
+removed the only place the file's declared extent was ever looked at. It is back
+as an explicit gate, `contract.DECLARED_PX_PER_DEG_TOL_PX = 0.1` — the declared
+px/deg may put the far edge of the source at most a tenth of a pixel away from
+where the canonical grid puts it, computed as
+`width * pxPerDeg / pxPerDegDeclared - width`:
+
+```
+detail  pxPerDeg 303.23333333333335  pxPerDegDeclared 303.23337750432864
+        drift -0.015902 px   tol 0.1 px   -> passes
+color   pxPerDeclared null (no GeoTIFF keys at all) -> not checked, nothing to check
+STAGE 0 OK
+```
+
+0.1 px is ~6x the observed 8-decimal-place rounding (0.0159 px) and 5x tighter
+than the half-pixel that is a broken grid. Pinned at both ends: the gate raises
+at ±0.5 px, at 1 px, at 250 px and at a 2x pixel size, and it still passes the
+real JP2. Test counts: `test_contract.py` 12 → 21, `test_fetch.py` 24 → 28, so
+**85 → 98 passed**, clean under `-W error`.

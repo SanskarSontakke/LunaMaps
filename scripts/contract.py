@@ -24,6 +24,12 @@ states nothing). The detail JP2 declares 0.00329779 deg/px where a 109164 px
 globe needs 360/109164 = 0.00329779048 deg/px; that 4.8038e-10 deg/px rounding
 is 0.016 px of shortfall across the width, which is metadata evidence, not a
 geometry to propagate into the tiling grid.
+
+Because the extent is now canonical, the box gate cannot see the file's own
+claim any more, so `assert_contract` checks the claim directly: it must put the
+far edge of the source within `DECLARED_PX_PER_DEG_TOL_PX` (0.1 px) of where the
+canonical grid puts it. Half a pixel is a broken grid, not a rounded label, and
+the test suite fails at half a pixel.
 """
 from __future__ import annotations
 import rasterio
@@ -43,6 +49,22 @@ EXPECTED_DETAIL = {'width': 109164, 'height': 54582, 'count': 1,
                    'pxPerDeg': 303.233, 'dtype': 'uint8', 'tol': 2e-3}
 EXPECTED_COLOR = {'width': 27360, 'height': 13680, 'count': 4,
                   'pxPerDeg': 76.0, 'dtype': 'uint8', 'tol': 1e-6}
+
+# How far the file's own stated pixel size may sit from the canonical grid,
+# measured in canonical pixels at the far edge of the source
+# (`width * pxPerDeg / declared - width`). Because `pxPerDeg` is canonicalised
+# to width/360, east/south are exact by construction and the extent box can no
+# longer see the file's claim at all -- so the claim gets its own gate.
+#
+# Measured on the real detail JP2: it declares 0.00329779 deg/px (8 decimal
+# places) against the 360/109164 = 0.0032977904803781466 a 109164 px globe
+# needs, i.e. pxPerDegDeclared 303.23337750432864 vs canonical
+# 303.23333333333335 -- 4.417e-5 px/deg, 1.46e-7 relative, 0.0159 px once it
+# accumulates across the width. 0.1 px is ~6x that rounding and 5x tighter than
+# the half-pixel that is a broken grid rather than a rounded label, so it
+# catches a wrong source without rejecting the one we have. Pinned by
+# test_the_declared_pixel_size_gate_fails_at_half_a_pixel.
+DECLARED_PX_PER_DEG_TOL_PX = 0.1
 
 
 def _normalise_origin(west, north, px_per_deg):
@@ -105,6 +127,21 @@ def assert_contract(actual: dict, expected: dict) -> None:
             f"pxPerDeg: got {actual['pxPerDeg']:.6f} (file declares "
             f"{actual.get('pxPerDegDeclared')!r}) expected "
             f"{expected['pxPerDeg']:.6f} tol {tol} ({actual['path']})")
+    # The file's own pixel size, checked on its own terms. east/south are
+    # derived from the canonical size so they cannot reveal a disagreeing
+    # label; this is the only place that claim is verified. A source with no
+    # georeference states nothing, so there is nothing to check -- and nothing
+    # is invented for it.
+    declared = actual.get('pxPerDegDeclared')
+    if declared is not None:
+        drift_px = actual['width'] * actual['pxPerDeg'] / declared - actual['width']
+        if abs(drift_px) > DECLARED_PX_PER_DEG_TOL_PX:
+            raise AssertionError(
+                f'pxPerDegDeclared: file states {declared:.9f} px/deg, the '
+                f'canonical grid is {actual["pxPerDeg"]:.9f} px/deg '
+                f'(width/360); its own pixel size puts the far edge '
+                f'{drift_px:+.4f} px off that grid, tol '
+                f'{DECLARED_PX_PER_DEG_TOL_PX} px ({actual["path"]})')
     # east/south are derived from the canonical pixel size (width/360), so they
     # are exact for a correct global grid no matter how the source rounds its
     # own deg/px statement -- which is why the box keeps the plain 1e-6 deg gate

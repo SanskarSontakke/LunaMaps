@@ -241,7 +241,32 @@ def test_main_keeps_provenance_for_roles_it_did_not_fetch(raw, monkeypatch):
 
 # ---------------------------------------------------- Minor 9: cached digests --
 
-def test_reuse_does_not_rehash_a_recorded_digest(raw, monkeypatch):
+def test_reuse_rehashes_by_default(raw, monkeypatch):
+    """Always-verify is the default: name + size is not proof of content.
+
+    The measured cost of re-hashing is ~2.5 s for the whole 3 GB of sources, so
+    the reuse path re-reads them and reports what they actually contain.
+    """
+    body = b'q' * 100
+    digest = hashlib.sha256(body).hexdigest()
+    (raw / 'src.bin').write_bytes(body)
+    (raw / 'sha256.json').write_text(json.dumps(
+        [{'role': 'testraster', 'name': 'src.bin', 'bytes': 100,
+          'sha256': digest}]))
+    calls = []
+    real_sha256 = fetch_data.sha256
+    monkeypatch.setattr(fetch_data, 'sha256',
+                        lambda p: calls.append(p) or real_sha256(p))
+    no_network(monkeypatch)
+    rec = fetch_data.fetch(SPEC)
+    assert calls == [raw / 'src.bin'], 'the default did not re-hash'
+    assert rec['sha256'] == digest
+    assert rec['sha256Source'] == 'computed'
+    assert rec['sha256Verified'] is True
+
+
+def test_skip_verify_copies_the_recorded_digest_without_rehashing(raw, monkeypatch):
+    """The escape hatch stays honest about not having hashed anything."""
     (raw / 'src.bin').write_bytes(b'q' * 100)
     (raw / 'sha256.json').write_text(json.dumps(
         [{'role': 'testraster', 'name': 'src.bin', 'bytes': 100,
@@ -250,14 +275,42 @@ def test_reuse_does_not_rehash_a_recorded_digest(raw, monkeypatch):
     monkeypatch.setattr(fetch_data, 'sha256',
                         lambda p: calls.append(p) or 'computed')
     no_network(monkeypatch)
-    rec = fetch_data.fetch(SPEC)
+    rec = fetch_data.fetch(SPEC, verify=False)
     assert rec['sha256'] == 'rec' + '0' * 61
     assert rec['sha256Source'] == 'recorded'
     assert rec['sha256Verified'] is False
     assert calls == [], 'hashed a file it did not need to'
 
 
+def test_skip_verify_still_hashes_when_nothing_is_recorded(raw, monkeypatch):
+    """An escape hatch with no history must not report a digest it invented."""
+    body = b'q' * 100
+    digest = hashlib.sha256(body).hexdigest()
+    (raw / 'src.bin').write_bytes(body)
+    no_network(monkeypatch)
+    rec = fetch_data.fetch(SPEC, verify=False)
+    assert rec['sha256'] == digest
+    assert rec['sha256Source'] == 'computed'
+    assert rec['sha256Verified'] is True
+
+
+def test_a_rehash_that_disagrees_with_the_record_fails_loud(raw, monkeypatch):
+    """Verification that never compares the two digests verifies nothing.
+
+    The file is silently re-labelled with a new digest otherwise, and the
+    2.5 GB source that changed under us would reach the bake unremarked.
+    """
+    (raw / 'src.bin').write_bytes(b'q' * 100)
+    (raw / 'sha256.json').write_text(json.dumps(
+        [{'role': 'testraster', 'name': 'src.bin', 'bytes': 100,
+          'sha256': 'dead' + '0' * 58}]))
+    no_network(monkeypatch)
+    with pytest.raises(SystemExit, match='digest'):
+        fetch_data.fetch(SPEC)
+
+
 def test_reuse_rehashes_when_the_record_does_not_match(raw, monkeypatch):
+    """A record for a *different* file is no record at all -- and no mismatch."""
     (raw / 'src.bin').write_bytes(b'q' * 100)
     (raw / 'sha256.json').write_text(json.dumps(
         [{'role': 'testraster', 'name': 'other.bin', 'bytes': 100,
@@ -275,13 +328,35 @@ def test_verify_rehashes_even_when_a_digest_is_recorded(raw, monkeypatch):
     (raw / 'src.bin').write_bytes(body)
     (raw / 'sha256.json').write_text(json.dumps(
         [{'role': 'testraster', 'name': 'src.bin', 'bytes': 100,
-          'sha256': 'rec' + '0' * 61}]))
+          'sha256': digest}]))
     monkeypatch.setattr(fetch_data, 'sha256',
                         lambda p: hashlib.sha256(p.read_bytes()).hexdigest())
     rec = fetch_data.fetch(SPEC, verify=True)
     assert rec['sha256'] == digest
     assert rec['sha256Source'] == 'computed'
     assert rec['sha256Verified'] is True
+
+
+def test_main_verifies_by_default_and_only_skips_on_request(raw, monkeypatch):
+    seen = []
+
+    def fake_fetch(spec, force=False, verify=True):
+        seen.append(verify)
+        return {'role': spec['role'], 'name': spec['name'], 'bytes': 7,
+                'sha256': 'x' * 64}
+
+    monkeypatch.setattr(fetch_data, 'fetch', fake_fetch)
+    monkeypatch.setattr(fetch_data, 'probe_capabilities',
+                        lambda: {'rasterio': '0', 'drivers': {'detail': {'open': True}}})
+    monkeypatch.setattr(sys, 'argv', ['fetch_data.py', '--only', 'color'])
+    assert fetch_data.main() == 0
+    assert seen == [True], 'the default run did not verify'
+
+    seen.clear()
+    monkeypatch.setattr(sys, 'argv', ['fetch_data.py', '--only', 'color',
+                                     '--skip-verify'])
+    assert fetch_data.main() == 0
+    assert seen == [False], '--skip-verify did not reach fetch()'
 
 
 # --------------------------------------------------------------- I3: sidecars --

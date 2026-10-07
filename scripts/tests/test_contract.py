@@ -1,3 +1,4 @@
+import re
 import sys
 from pathlib import Path
 import numpy as np
@@ -205,3 +206,82 @@ def test_the_extent_box_still_rejects_a_whole_pixel_of_drift():
     with pytest.raises(AssertionError, match='south'):
         contract.assert_contract(dict(DETAIL_BOX, south=-89.99665),
                                  contract.EXPECTED_DETAIL)
+
+
+# The canonical box's own drift, measured from the two values the real file
+# produces: 109164 * (303.23333333333335 / 303.23337750432864 - 1).
+DETAIL_DECLARED_DRIFT_PX = 109164 * (DETAIL_PX_PER_DEG / (1.0 / 0.00329779) - 1.0)
+
+
+def declared_at_drift_px(drift_px: float, width: int = 109164,
+                         canonical: float | None = None) -> float:
+    """The px/deg a file would have to state to land `drift_px` off canonical.
+
+    east_declared - east_canonical, measured in canonical pixels, is
+    `width * pxPerDeg / declared - width`; invert it for the declared value.
+    """
+    if canonical is None:
+        canonical = DETAIL_PX_PER_DEG
+    return width * canonical / (width + drift_px)
+
+
+def test_the_files_own_pixel_size_is_verified_not_just_diagnostic():
+    """Canonicalising pxPerDeg made east/south exact by construction, so the
+    box gate stopped looking at the file's own claim. Stage 0 must still
+    compare that claim against the grid it implies, or a source on a different
+    pixel size passes Stage 0 while baking to the wrong geometry."""
+    assert abs(DETAIL_DECLARED_DRIFT_PX) < 0.02, DETAIL_DECLARED_DRIFT_PX
+    contract.assert_contract(DETAIL_BOX, contract.EXPECTED_DETAIL)
+
+
+@pytest.mark.parametrize('drift_px', (0.5, -0.5, 1.0, 250.0))
+def test_the_declared_pixel_size_gate_fails_at_half_a_pixel(drift_px):
+    """The gate is pinned below the half-pixel that is a real grid defect."""
+    declared = declared_at_drift_px(drift_px)
+    with pytest.raises(AssertionError, match='pxPerDegDeclared'):
+        contract.assert_contract(dict(DETAIL_BOX, pxPerDegDeclared=declared),
+                                 contract.EXPECTED_DETAIL)
+
+
+def test_the_declared_pixel_size_gate_clears_8_decimal_metadata():
+    """8-decimal-place metadata (0.00329779) drifts 0.016 px; the gate must not
+    fail on it, or Stage 0 rejects the only detail source we have."""
+    half_tol = contract.DECLARED_PX_PER_DEG_TOL_PX * 0.5
+    over_tol = contract.DECLARED_PX_PER_DEG_TOL_PX * 2.0
+    contract.assert_contract(
+        dict(DETAIL_BOX, pxPerDegDeclared=declared_at_drift_px(half_tol)),
+        contract.EXPECTED_DETAIL)
+    with pytest.raises(AssertionError, match='pxPerDegDeclared'):
+        contract.assert_contract(
+            dict(DETAIL_BOX, pxPerDegDeclared=declared_at_drift_px(over_tol)),
+            contract.EXPECTED_DETAIL)
+
+
+def test_a_declared_pixel_size_off_by_one_is_the_wrong_grid_not_rounding():
+    """A 2x pixel size is a different globe: 109164 px of drift, and the box
+    still says +/-180 and +/-90 because the extent is canonicalised."""
+    with pytest.raises(AssertionError, match='pxPerDegDeclared'):
+        contract.assert_contract(dict(DETAIL_BOX,
+                                      pxPerDegDeclared=DETAIL_PX_PER_DEG / 2.0),
+                                 contract.EXPECTED_DETAIL)
+
+
+def test_a_file_that_states_no_pixel_size_is_not_checked_for_one():
+    """The colour TIFF has no GeoTIFF keys: pxPerDegDeclared is None, so there
+    is no claim to compare and the gate must stay silent (not fail on None)."""
+    color_box = {'path': 'color-tif', 'width': 27360, 'height': 13680,
+                 'count': 4, 'dtype': 'uint8', 'pxPerDeg': 27360 / 360.0,
+                 'pxPerDegDeclared': None, 'west': -180.0, 'north': 90.0,
+                 'east': 180.0, 'south': -90.0}
+    contract.assert_contract(color_box, contract.EXPECTED_COLOR)
+
+
+def test_the_gate_reports_the_drift_it_rejected(tmp_path):
+    c = contract.read_grid_contract(make_rounded_grid(
+        tmp_path, 'rounded.tif',
+        1.0 / declared_at_drift_px(3.0, W, PX_PER_DEG)))
+    with pytest.raises(AssertionError) as excinfo:
+        contract.assert_contract(c, SMALL_EXPECTED)
+    message = str(excinfo.value)
+    assert 'pxPerDegDeclared' in message
+    assert re.search(r'\b3(\.\d+)? px\b', message), message

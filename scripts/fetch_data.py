@@ -5,11 +5,16 @@ than rewritten: a `--only color,labels` run must not erase the detail source's
 history. Every record carries the `fetchedAt` timestamp of the run that last
 touched that role, so a partial run is visible in the file.
 
-Integrity note, stated plainly: the reuse path verifies *size*, and by default
-copies the digest recorded by an earlier run instead of re-hashing 2.5 GB each
-time (`sha256Source: 'recorded'`, `sha256Verified: false`). A file of the right
-name and size but wrong contents would only be caught by `--verify`, which
-re-hashes, or by `--force`, which re-downloads.
+Integrity note, stated plainly: a source already on disk is **re-hashed on every
+run**, so an idempotent `npm run fetch` proves the bytes are still the bytes it
+downloaded; the measured cost of reading all 3.04 GB back is ~2.5 s. `--verify`
+was opt-in and is gone -- trusting name + size alone let a corrupted 2.5 GB JP2
+through silently, which is what this protects. `--skip-verify` is the escape
+hatch for a run that cannot afford the read: it copies the digest an earlier run
+recorded and the record says so (`sha256Source: 'recorded'`,
+`sha256Verified: false`, `reused: true`). A re-hash that disagrees with the
+recorded digest is a defect, not a refresh, so the run stops rather than
+relabelling the file.
 """
 from __future__ import annotations
 import argparse
@@ -221,14 +226,33 @@ def write_records(path: Path, current, fetched_at: str | None = None) -> list:
     return merged
 
 
-def _digest_for(spec, dest: Path, size: int, verify: bool = False):
-    """(digest, hashed_now) for an already-present file of the expected size."""
-    if not verify:
-        for rec in read_records(RAW / 'sha256.json'):
-            if (rec.get('role') == spec['role'] and rec.get('name') == spec['name']
-                    and rec.get('bytes') == size and rec.get('sha256')):
-                return rec['sha256'], False
-    return sha256(dest), True
+def recorded_digest(spec, size: int) -> str | None:
+    """The digest an earlier run recorded for this exact role, name and size."""
+    for rec in read_records(RAW / 'sha256.json'):
+        if (rec.get('role') == spec['role'] and rec.get('name') == spec['name']
+                and rec.get('bytes') == size and rec.get('sha256')):
+            return rec['sha256']
+    return None
+
+
+def _digest_for(spec, dest: Path, size: int, verify: bool = True):
+    """(digest, hashed_now) for an already-present file of the expected size.
+
+    Verifying means re-hashing *and* comparing: a digest that silently moves is
+    the corruption this step exists to catch, so it ends the run instead of
+    overwriting the history with the new value.
+    """
+    recorded = recorded_digest(spec, size)
+    if not verify and recorded:
+        return recorded, False
+    digest = sha256(dest)
+    if recorded and recorded != digest:
+        raise SystemExit(
+            f'{spec["name"]}: digest changed. {size:,} B on disk hashes to '
+            f'{digest}, but {recorded} was recorded for this role, name and '
+            'size. The file is not the file that was fetched: re-download with '
+            '--force and re-check the source URL before baking.')
+    return digest, True
 
 
 def _record(spec, size, digest, hashed, reused, spec_mismatch, sidecars) -> dict:
@@ -239,14 +263,14 @@ def _record(spec, size, digest, hashed, reused, spec_mismatch, sidecars) -> dict
             'specMismatch': spec_mismatch, 'sidecars': sidecars}
 
 
-def fetch(spec, force=False, verify=False) -> dict:
+def fetch(spec, force=False, verify=True) -> dict:
     dest = RAW / spec['name']
     if dest.exists() and not force:
         size = dest.stat().st_size
         if size == spec['bytes']:
             digest, hashed = _digest_for(spec, dest, size, verify)
             print(f'have  {spec["name"]} ({size:,} B, sha256 {digest[:12]}… '
-                  f'{"re-hashed" if hashed else "as recorded, --verify to re-hash"})',
+                  f'{"re-hashed" if hashed else "as recorded, --skip-verify"})',
                   flush=True)
             return _record(spec, size, digest, hashed, True, False,
                            fetch_sidecars(spec, force))
@@ -318,9 +342,10 @@ def probe_capabilities() -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--force', action='store_true')
-    ap.add_argument('--verify', action='store_true',
-                    help='re-hash files already on disk instead of trusting the '
-                         'digest recorded in sha256.json (costs a 2.5 GB read)')
+    ap.add_argument('--skip-verify', dest='skip_verify', action='store_true',
+                    help='do not re-hash sources already on disk; trust the '
+                         'digest recorded by an earlier run (saves a ~2.5 s '
+                         'read of 3.04 GB, and says so in sha256Verified)')
     ap.add_argument('--only', default='',
                     help='comma-separated roles, e.g. detail_fallback,color,labels')
     a = ap.parse_args()
@@ -332,7 +357,7 @@ def main() -> int:
         if spec.get('optional') and not wanted:
             print(f'skip  {spec["name"]} (only needed if the JP2 driver fails)')
             continue
-        records.append(fetch(spec, a.force, a.verify))
+        records.append(fetch(spec, a.force, verify=not a.skip_verify))
     caps = probe_capabilities()
     # Merge by role: `--only labels` must leave detail's and color's provenance
     # intact, with their older fetchedAt showing which roles this run skipped.
