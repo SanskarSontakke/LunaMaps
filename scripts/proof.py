@@ -38,6 +38,7 @@ from PIL import Image
 
 import grid
 from labels import MARE_CODES, bbox_contains, wrap_lon
+import manifest as manifest_mod
 
 MARE_CENTRES = ['Mare Tranquillitatis', 'Mare Imbrium', 'Mare Crisium',
                 'Oceanus Procellarum', 'Mare Fecunditatis', 'Mare Nubium',
@@ -229,7 +230,11 @@ def main(out: str = 'public/tiles',
     """Run the gate and record the verdict in the manifest.
 
     The arguments exist so the failure path can be tested without writing to the
-    tracked pyramid; the shipped call is `main()` from `npm run proof`.
+    tracked pyramid; the shipped call is `main()` from `npm run proof`. The
+    record goes out through `manifest.write_manifest`, the one writer this repo
+    has for this artifact, so running the gate changes only the two gate keys and
+    leaves the file's line endings and trailing newline exactly as the bake
+    writer made them -- on every platform.
     """
     res = _json_safe(run_proof(out, features_path, level))
     mp = Path(out) / 'manifest.json'
@@ -240,7 +245,21 @@ def main(out: str = 'public/tiles',
                           'highlandMedian': res['highlandMedian'],
                           'contrast': res['contrast'],
                           'checks': res['checks'], 'failures': res['failures']}
-    mp.write_text(json.dumps(m, indent=1, allow_nan=False), encoding='utf-8')
+    # `allow_nan=False` stays as the belt to `_json_safe`'s braces: a non-finite
+    # value that function missed must raise BEFORE anything is written, not
+    # corrupt the tracked artifact after. It is a check, not the writer -- the
+    # bytes come from the one writer this repo has.
+    json.dumps(m, indent=1, allow_nan=False)
+    # MUST FIX 2: this used to be `mp.write_text(json.dumps(...), encoding='utf-8')`.
+    # On Windows `write_text` translates every '\n' to CRLF, and `json.dumps`
+    # emits no trailing newline, so the one command that reports the gate rewrote
+    # the tracked `public/tiles/manifest.json` with 290 CRLF terminators and a
+    # file ending mid-line -- undoing Task 17 finding 13's fix in
+    # `manifest.write_manifest`, which writes LF bytes plus a final `}\n`
+    # precisely so that artifact does not depend on the writer's platform.
+    # `scripts/tests/test_proof.py::test_the_two_manifest_writers_agree_byte_for_byte`
+    # pins the two writers on the same bytes.
+    manifest_mod.write_manifest(mp, m)
     print(json.dumps(res, indent=1))
     print(f'GATE G2 {"PASS" if res["passed"] else "FAIL"}')
     return 0 if res['passed'] else 4

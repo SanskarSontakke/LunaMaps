@@ -447,6 +447,44 @@ def test_write_manifest_appends_the_newline(tmp_path):
     assert p.read_bytes().endswith(b'}\n')
 
 
+def _git_tracked_bytes(rel_path: str) -> bytes | None:
+    """The bytes git holds for `rel_path` (the staged/index blob, i.e. what a
+    commit of the current tree would store), or None when git is unavailable or
+    the path is not tracked.
+
+    Why not just read the file: this machine checks git out with
+    `core.autocrlf=true`, so a *working copy* of any tracked text file can be
+    CRLF while the stored blob is LF. MUST FIX 2 is about the artifact in the
+    tree, so the assertion is taken from git's own bytes and the working file is
+    checked separately for the property that matters to the app (it parses, and it
+    ends on a complete line).
+    """
+    import subprocess
+    try:
+        done = subprocess.run(['git', 'show', f':{rel_path}'],
+                              cwd=str(REPO), capture_output=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return done.stdout
+
+
+def test_the_shipped_manifest_is_lf_only_with_a_trailing_newline():
+    """MUST FIX 2, the artifact side: Task 17 finding 13 fixed the writer to emit
+    LF bytes and one final `}\n`; `scripts/proof.py` then undid it on Windows with
+    a second, sloppier writer (290 CRLF terminators, no trailing newline). The
+    tracked bytes of the delivered manifest are therefore pinned, not trusted."""
+    tracked = _git_tracked_bytes('public/tiles/manifest.json')
+    assert tracked is not None, 'git could not read the tracked blob'
+    assert b'\r' not in tracked, 'the tracked manifest holds CR bytes (CRLF)'
+    assert tracked.endswith(b'}\n'), 'the tracked manifest ends mid-line'
+    # And the file the app actually loads here is the same content, on a complete
+    # line, whichever line ending this checkout was given.
+    working = SHIPPED_MANIFEST.read_bytes()
+    assert working.endswith(b'\n')
+    assert json.loads(working.decode('utf-8')) == json.loads(
+        tracked.decode('utf-8')), 'the working copy is not the tracked content'
+
+
 # --------------------------------------------------------------------------
 # 8. The regenerated manifest still satisfies the app's own validator.
 # --------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import grid
+import manifest
 import proof
 from labels import bbox_contains
 
@@ -477,3 +478,77 @@ def test_a_failing_proof_leaves_a_strictly_parseable_manifest(indexed_pyramid,
     assert 'GATE G2 FAIL' in printed
     assert 'NaN' not in printed
     assert _parse_strict(printed[:printed.rindex('}') + 1])['passed'] is False
+
+
+# ------------------------------------------------------------------ MUST FIX 2
+# `main()` used to do `mp.write_text(json.dumps(m, indent=1, allow_nan=False),
+# encoding='utf-8')`. On Windows `Path.write_text` translates every '\n' to
+# os.linesep and `json.dumps` emits no trailing newline, so the gate that reports
+# on the pyramid rewrote the one TRACKED artifact of that pyramid into 290
+# CRLF-terminated lines ending mid-line -- undoing Task 17 finding 13's LF + `}\n`
+# fix, which `manifest.write_manifest` exists to provide. `main()` now calls that
+# writer. These three tests are what keep it a fact rather than an intention.
+
+def _shipped_json() -> dict:
+    return json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8'))
+
+
+def _failing_gate_onto(indexed_pyramid) -> bytes:
+    """Run `proof.main()` for real (the gate FAILS on the 8-tile fixture, which is
+    the branch that used to corrupt the file) against a temp copy of the SHIPPED
+    manifest, and return the bytes it left behind. No real bake, no download."""
+    root = Path(indexed_pyramid)
+    mp = root / 'manifest.json'
+    manifest.write_manifest(mp, _shipped_json())   # canonical starting form
+    fc = {'type': 'FeatureCollection', 'features': [
+        {'type': 'Feature', 'geometry': {'type': 'Point', 'coordinates': [0.0, 0.0]},
+         'properties': {'name': 'Mare Tranquillitatis',
+                        'bbox': [-10, -10, 10, 10]}}]}
+    fp = root / 'features.json'
+    fp.write_text(json.dumps(fc), encoding='utf-8')
+    assert proof.main(out=str(root), features_path=str(fp), level=1) == 4
+    return mp.read_bytes()
+
+
+def test_the_two_manifest_writers_produce_the_same_bytes(indexed_pyramid,
+                                                         tmp_path):
+    """`proof.main()` and `manifest.write_manifest` are ONE writer for this
+    artifact: run the gate, then re-serialise what it left with the canonical
+    writer. Byte equality is the only acceptable answer, and it is exactly what
+    the old `write_text` could not produce (CRLF, no trailing newline)."""
+    after = _failing_gate_onto(indexed_pyramid)
+    assert b'\r' not in after, 'CRLF crept into the tracked manifest form'
+    assert after.endswith(b'}\n'), 'the tracked file ends mid-line'
+    canonical = manifest.write_manifest(tmp_path / 'canonical.json',
+                                        json.loads(after.decode('utf-8')))
+    assert canonical.read_bytes() == after
+    # Non-vacuous: the byte string the removed line produced on Windows differs,
+    # so the equality above can actually fail if the writers ever drift apart.
+    old_writer = json.dumps(json.loads(after.decode('utf-8')), indent=1,
+                            allow_nan=False).encode('utf-8')
+    assert old_writer != after
+
+
+def test_running_the_gate_changes_only_the_two_gate_keys(indexed_pyramid):
+    """The gate may annotate the manifest; it may not re-typeset it. Every other
+    field -- levels, sources, timings, the bake stamp -- must survive, and the
+    result must still be strict-parseable (a browser's JSON.parse, not Python's
+    lenient json.loads)."""
+    shipped = _shipped_json()
+    after = _parse_strict(_failing_gate_onto(indexed_pyramid).decode('utf-8'))
+    for key in shipped:
+        if key in ('albedoHistogram', 'geometryProof'):
+            continue
+        assert after[key] == shipped[key], f'the gate damaged {key}'
+    assert after['geometryProof']['passed'] is False
+
+
+def test_the_shipped_manifest_is_the_canonical_writers_own_bytes(tmp_path):
+    """The artifact in the tree is what `write_manifest` writes for its own
+    content -- i.e. MUST FIX 2's repair (re-emit the tracked file through the one
+    writer) is done and not merely promised. Re-running the writer over the
+    committed file is a byte-for-byte no-op."""
+    raw = SHIPPED_MANIFEST.read_bytes()
+    p = manifest.write_manifest(tmp_path / 'manifest.json',
+                                json.loads(raw.decode('utf-8')))
+    assert p.read_bytes() == raw
