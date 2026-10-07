@@ -1,13 +1,31 @@
 'use client';
 import { useEffect, useState } from 'react';
 import type { Manifest } from '@/types';
-import { TILE_SIZE } from '@/lib/grid';
+import { MOON_RADIUS_M, TILE_SIZE } from '@/lib/grid';
+
+const EXPECTED_SCHEMA = 1;
+// The baked pyramids span levels 0..7. A layer's `top` becomes Cesium's
+// maximumLevel (moon.ts), so an out-of-range or non-integer value makes the
+// renderer request tiles that were never written. Refuse the whole manifest.
+const MAX_TOP = 7;
+
+const isBakedTop = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_TOP;
 
 export function parseManifest(value: unknown): Manifest | null {
   if (typeof value !== 'object' || value === null) return null;
   const m = value as Partial<Manifest>;
-  if (!m.grid || m.grid.tileSize !== TILE_SIZE) return null;
-  if (!m.layers || !m.layers.paper || !m.layers.photo) return null;
+  if (m.schema !== EXPECTED_SCHEMA) return null;
+  const grid = m.grid;
+  if (!grid) return null;
+  if (grid.tileSize !== TILE_SIZE) return null;
+  if (grid.yOrigin !== 'north') return null;
+  if (grid.radiusMeters !== MOON_RADIUS_M) return null;
+  if (grid.lonDomain !== '180') return null;
+  if (grid.latitudeType !== 'planetocentric') return null;
+  if (!m.layers) return null;
+  if (!isBakedTop(m.layers.paper?.top)) return null;
+  if (!isBakedTop(m.layers.photo?.top)) return null;
   return m as Manifest;
 }
 
@@ -50,15 +68,27 @@ export interface Probe {
   status: number;
 }
 
+/** Level L of the grid contract has 2**(L+1) columns and 2**L rows (grid.ts),
+ *  so the *actual* bottom row index is 2**L - 1. */
+const colsAt = (top: number) => 2 ** (top + 1);
+const bottomRowAt = (top: number) => 2 ** top - 1;
+
 /** Three fetches that catch the usual mistakes: unbaked, wrong top level,
- *  and a broken antimeridian column. */
+ *  and a broken antimeridian column. Each path uses its *own* layer's top and
+ *  probes the real bottom row. */
 export async function probeAssets(m: Manifest): Promise<Probe[]> {
-  const top = layerTop(m, 'photo');
-  const cols = 2 ** (top + 1);
+  const photoTop = layerTop(m, 'photo');
+  const paperTop = layerTop(m, 'paper');
   const paths = [
+    // unbaked: does the pyramid exist at all?
     '/tiles/photo/0/0/0.jpg',
-    `/tiles/paper/${top}/${cols - 1}/0.jpg`,
-    `/tiles/photo/${top}/0/${Math.min(2 ** top - 1, 2 ** (top - 1))}.jpg`,
+    // wrong top level + the east seam, at the deepest *paper* row. The old code
+    // applied photo's top to this paper URL and probed row 0 (north).
+    `/tiles/paper/${paperTop}/${colsAt(paperTop) - 1}/${bottomRowAt(paperTop)}.jpg`,
+    // the antimeridian column, at the deepest *photo* row. The old
+    // `Math.min(2**top - 1, 2**(top - 1))` always resolved to `2**(top - 1)`
+    // (the equator), so the intended bottom row was dead code.
+    `/tiles/photo/${photoTop}/0/${bottomRowAt(photoTop)}.jpg`,
   ];
   return Promise.all(
     paths.map(async (path) => {

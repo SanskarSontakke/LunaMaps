@@ -11,8 +11,12 @@ check could NOT be completed** — see "What remains for the controller".
 ## What was verified numerically (in-page evidence)
 
 The app exposes `globalThis.__moonViewer` and `globalThis.__moonHarness`
-(`camera()`, `sceneMode()`, `setMode`, `setLayer`, `setCamera`, `imageryCount()`) for the
-verification harness only. All toggles below went through the real UI path
+(`camera()`, `sceneMode()`, `setMode`, `setLayer`, `setCamera`, `imageryCount()`,
+and — added by Task 11 — `labelCount()`, `shownEntities()`, `refreshLabels()`,
+`picked()`) for the verification harness only. As of the Task 10 fix round these
+two globals are gated to `process.env.NODE_ENV === 'development'` (they are `undefined`
+in a production bundle), so the sweep MUST run `npm run dev` — not a built
+`next start` — for the hooks to exist. All toggles below went through the real UI path
 (`button.click()` on `.ctl-mode`/`.ctl-layer` → React state → effect → `morph.ts setMode/
 setLayer`), except where a `__moonHarness.setMode` call is named explicitly (same function).
 
@@ -52,12 +56,19 @@ built/driven to. Verified: first click after load now morphs (SCENE3D→SCENE2D,
 Cesium 1.146's morph is two sequential tweens driven by scene render frames; the brief's
 `camera.morphTo2D(1.0, cb)` API **does not exist** (the morph methods are on `Scene` and
 take only a duration). `setMode` therefore starts `scene.morphToX(0.5)` and pumps until
-`scene.mode` reaches the target, with a wall-clock fallback (`scene.completeMorph()`) at
-2×duration+3 s. In this in-app browser the page is *hidden* (`visibilityState: hidden`),
-Chrome suspends its rAF loop and throttles its timers, so every toggle here completed via
-the fallback (elapsed 4.0–8.7 s per morph). The **final state is what the table above
-proves**; the smooth animated transition can only be judged in a visible tab (open the URL
-below and click Paper — controller action).
+`scene.mode` reaches the target, with a wall-clock fallback (`scene.completeMorph()`).
+In the original build that fallback deadline was `2 × duration + 3 s = 4 s`; the Task 10
+fix round raised it to `MORPH_DEADLINE_MS = 15 s` so a normal ~1 s morph in a visible tab
+can never be cut into a jump-cut by a stalled first frame (see the owed section below). In
+this in-app browser the page is *hidden* (`visibilityState: hidden`), Chrome suspends its
+rAF loop and throttles its timers, so every toggle here completed via the fallback
+(elapsed 4.0–8.7 s per morph, measured before the deadline raise). The **final state is
+what the table above proves**; the smooth animated transition can only be judged in a
+visible tab — see "OWED to Task 18" below. After the await, `settleMode()` now re-checks
+that the viewer is alive and the scene actually reached the target before writing the
+controller/setView, and a morph that never lands rejects so the UI surfaces it and can
+retry (this fixes the destroy-race and silent-divergence findings; it does not observe the
+animation).
 
 ### Layer switching
 
@@ -83,6 +94,10 @@ University (LROC WAC mosaic) …", 2 credit containers present), and the browser
 contains **zero** Cesium warnings or errors — no "already associated with a DOM element"
 message of any kind. **Decision: CREDIT stays a singleton; no factory needed.**
 
+Task 10 fix round: the singleton was deliberately left untouched (this round only added the
+`MIN_H`/`MAX_H` height limits to moon.ts, which is a separate concern from `CREDIT`), so the
+decision and the "no 'already associated' warning" observation stand. Re-check at Task 13.
+
 Console inventory for the whole session: one info line ("Download the React DevTools…")
 and nothing else.
 
@@ -99,6 +114,61 @@ and nothing else.
   produces (`__moonHarness.setCamera` → `camera.setView`, including tilt and heading);
   the preservation invariant under test is identical. Real mouse-drag behaviour still
   needs one look in a visible tab.
+
+## OWED to Task 18 — the morph ANIMATION was never observed landing on its own
+
+Reviewer finding, recorded verbatim:
+
+> Every recorded toggle finished via the `completeMorph()` fallback (4.0-8.7 s),
+> never via `scene.mode === target`. End state proven; the animation is not, and a
+> 4 s deadline against ~1 s of morph turns any stalled first frame into a
+> jump-cut. Needs one visible-tab run.
+
+**Status: OWED, not closed.** This fix round could not run a visible tab — browser
+verification belongs to the controller, the in-app harness tab has a 0×0 viewport, and the
+external tab cannot be scripted. No observation of the real animation was possible here,
+so the smooth Paper↔Globe transition is **unproven**; do not describe it as working until
+the steps below have actually been run and passed.
+
+What this round changed in response (these make a natural landing *possible* and make a
+non-landing loud; none of them OBSERVE the animation):
+- `MORPH_DEADLINE_MS` (src/lib/cesium/morph.ts) raised from `2 × duration + 3 s = 4 s` to
+  `max(15 s, (2·0.5 + 12) s) = 15 s`, so a normal ~1 s morph with a stalled first frame is
+  never jump-cut in a visible tab; the `completeMorph()` fallback now only fires when the
+  render loop is genuinely starved (a hidden tab).
+- `settleMode()` throws `MorphIncompleteError` when the scene did not reach the target, and
+  `MoonMap` advances its committed mode only on success, so a failed switch surfaces in the
+  alert panel and stays retryable instead of silently diverging.
+
+Exact steps for a human in a VISIBLE browser tab:
+1. Start the dev server: `npm run dev -- -p 3110` and open http://localhost:3110/ in a
+   normal FOREGROUND window (not hidden / not headless). The harness globals are gated to
+   `process.env.NODE_ENV === 'development'`, so this must be `dev`, not a built `start`.
+2. Paste the console snippet below, then click Paper and Globe by hand and WATCH the
+   transition — it should animate over roughly a second, not snap.
+3. Proof requires `usedFallback=false` and `landedOnItsOwn=true` on every toggle. If
+   `usedFallback` is ever `true` in a *visible* tab, the morph did not land on its own and
+   the jump-cut fired — that is exactly the still-open finding, so report it, do not sign off.
+
+Console snippet (devtools of the visible tab):
+
+```js
+const v = globalThis.__moonViewer, s = v.scene;
+const NAMES = ['MORPHING', 'COLUMBUS_VIEW', 'SCENE2D', 'SCENE3D'];
+const origComplete = s.completeMorph.bind(s);
+let usedFallback = false;
+s.completeMorph = function (...a) { usedFallback = true; return origComplete(...a); };
+for (const m of ['paper', 'globe', 'paper', 'globe']) {
+  usedFallback = false;
+  const t0 = performance.now();
+  await __moonHarness.setMode(m).then(() => s.mode === (m === 'paper' ? 2 : 3));
+  const ok = s.mode === (m === 'paper' ? 2 : 3);
+  console.log(`morph ${m}: end=${NAMES[s.mode]} ms=${Math.round(performance.now() - t0)} usedFallback=${usedFallback} landedOnItsOwn=${ok && !usedFallback}`);
+}
+```
+Expected in a visible tab: `end=SCENE2D`/`SCENE3D`, `usedFallback=false` throughout,
+`landedOnItsOwn=true`, `ms` a little above ~1000 ms (the 0.5 s morph is two tweens plus
+frame scheduling), and a visibly smooth animation.
 
 ## Steps for the controller (close the visual check)
 

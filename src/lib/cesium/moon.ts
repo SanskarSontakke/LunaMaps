@@ -5,6 +5,13 @@ export type { LayerName, Mode };
 
 export const MOON_RADIUS_M = 1_737_400;
 export const TILE_SIZE = 512;
+
+// Camera height limits in metres. These live here because this is the file that
+// actually configures the screen-space controller; morph.ts imports (and
+// re-exports) them so the height clamp and the controller can never disagree.
+export const MIN_H = 1_500;
+export const MAX_H = 3.5e7;
+
 export const MOON_ELLIPSOID = new Cesium.Ellipsoid(
   MOON_RADIUS_M,
   MOON_RADIUS_M,
@@ -73,8 +80,8 @@ export function createMoonViewer(container: HTMLElement, opts: MoonViewerOptions
   scene.backgroundColor = Cesium.Color.fromCssColorString('#05060a');
 
   const ctl = scene.screenSpaceCameraController;
-  ctl.minimumZoomDistance = 1_500;
-  ctl.maximumZoomDistance = 3.5e7;
+  ctl.minimumZoomDistance = MIN_H;
+  ctl.maximumZoomDistance = MAX_H;
   ctl.enableTilt = opts.mode === 'globe';
 
   return viewer;

@@ -1,11 +1,23 @@
 import * as Cesium from 'cesium';
 import type { LayerName, Mode } from '@/types';
-import { MOON_ELLIPSOID, makeProvider } from './moon';
+import { MAX_H, MIN_H, MOON_ELLIPSOID, makeProvider } from './moon';
 
-export const MIN_H = 1_500;
-export const MAX_H = 3.5e7;
+// The height limits are defined once in moon.ts (where the screen-space
+// controller is configured) and re-exported here so callers and tests keep
+// importing them from morph.ts without a second, drifting copy.
+export { MAX_H, MIN_H };
 /** Duration passed to Cesium's scene morph, in seconds. */
 export const MORPH_SECONDS = 0.5;
+/**
+ * Wall-clock ceiling for a morph to land on its own before the completeMorph()
+ * fallback jump-cuts it. Cesium's morph is two sequential tweens (~2 *
+ * MORPH_SECONDS of wall time) and the first frame can stall on tile decode or a
+ * GC pause; a deadline close to the morph duration turns that stall into a
+ * jump-cut. This sits far above the duration so a *visible* tab always reaches
+ * scene.mode === target unaided — the fallback only ever fires when the render
+ * loop is starved (a hidden tab, where the tweens are pumped manually).
+ */
+export const MORPH_DEADLINE_MS = Math.max(15_000, (2 * MORPH_SECONDS + 12) * 1000);
 
 export interface CameraState {
   lonDeg: number;
@@ -74,6 +86,43 @@ async function doSetMode(viewer: Cesium.Viewer, mode: Mode): Promise<void> {
     else scene.morphTo2D(MORPH_SECONDS);
     await waitForSceneMode(viewer, target);
   }
+  // waitForSceneMode can resolve on destroy (teardown) or on the fallback
+  // deadline *without* the mode ever landing. settleMode re-checks both before
+  // touching the controller, so a torn-down viewer is left alone and a stalled
+  // morph rejects (and stays retryable) instead of half-applying onto a wrong
+  // scene — the destroy race this guards against.
+  settleMode(viewer, mode, target, snap);
+}
+
+/** Thrown by `settleMode` when the scene did not reach the requested mode.
+ *  MoonMap turns the resulting rejection into a visible error and leaves its
+ *  committed `applied` mode untouched, so the switch can be retried. */
+export class MorphIncompleteError extends Error {
+  constructor(mode: Mode) {
+    super(`scene never reached ${mode} mode; try again`);
+    this.name = 'MorphIncompleteError';
+  }
+}
+
+/**
+ * The synchronous tail of a mode change, run after the morph has been awaited.
+ * Kept free of any DOM/timer dependency so it is unit-testable with a plain
+ * fake viewer (the await in `doSetMode` is what needs a real tab).
+ *  - viewer/scene destroyed: teardown, not a failed switch — resolve quietly,
+ *    apply nothing (there is no scene to retry onto).
+ *  - scene.mode !== target: the morph was cut short — throw so the caller can
+ *    surface it and keep the switch retryable.
+ *  - otherwise: apply tilt + setView + requestRender.
+ */
+export function settleMode(
+  viewer: Cesium.Viewer,
+  mode: Mode,
+  target: number,
+  snap: CameraState,
+): void {
+  if (viewer.isDestroyed() || viewer.scene.isDestroyed?.()) return;
+  if (viewer.scene.mode !== target) throw new MorphIncompleteError(mode);
+  const scene = viewer.scene;
   scene.screenSpaceCameraController.enableTilt = mode === 'globe';
   viewer.camera.setView({
     // Cartesian3 (not Cartographic) because 1.146's setView typings only
@@ -103,11 +152,12 @@ async function doSetMode(viewer: Cesium.Viewer, mode: Mode): Promise<void> {
 function waitForSceneMode(viewer: Cesium.Viewer, target: number): Promise<void> {
   return new Promise<void>((resolve) => {
     const scene = viewer.scene;
-    // Cesium's morph is two sequential tweens (camera, then morphTime), so
-    // it needs roughly 2 × MORPH_SECONDS to finish naturally. In a hidden
-    // tab this pump ticks at the 1 s background-timer clamp, so the fallback
-    // margin must be generous; a visible tab completes at ~2 s unasked.
-    const deadline = Date.now() + (2 * MORPH_SECONDS + 3) * 1000;
+    // Cesium's morph is two sequential tweens (camera, then morphTime). The
+    // deadline is deliberately generous (see MORPH_DEADLINE_MS) so a stalled
+    // first frame in a visible tab never trips the completeMorph() jump-cut
+    // before the real animation lands; the fallback only fires when frames are
+    // starved (a hidden tab), where this pump ticks at the 1 s timer clamp.
+    const deadline = Date.now() + MORPH_DEADLINE_MS;
     const pump = () => {
       if (viewer.isDestroyed() || scene.isDestroyed?.()) return resolve();
       if (scene.mode === target) return resolve();
