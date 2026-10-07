@@ -68,7 +68,11 @@ def test_rejects_a_grid_that_is_not_two_to_one(tmp_path):
         contract.read_grid_contract(str(path))
 
 
+@pytest.mark.filterwarnings('ignore::rasterio.errors.NotGeoreferencedWarning')
 def test_unreferenced_raster_gets_an_assigned_grid_and_says_so(tmp_path):
+    # The missing geotransform is the point of this test, so rasterio's
+    # NotGeoreferencedWarning is expected: silence it here (and only here) so
+    # the suite stays warning-free.
     p = make_grid(tmp_path, 'plain.tif', 0.0, 0.0, count=4, georef=False)
     c = contract.read_grid_contract(p)
     assert c['gridReadFrom'] == 'assigned'
@@ -93,3 +97,28 @@ def test_real_expected_numbers_match_the_spec_table():
     assert contract.EXPECTED_COLOR['height'] == 13680
     assert contract.EXPECTED_COLOR['count'] == 4
     assert contract.EXPECTED_COLOR['pxPerDeg'] == pytest.approx(76.0)
+
+
+# Measured from data/raw/LRO_WAC_Mosaic_Global_303ppd_v3.jp2 itself. The JP2's
+# GML offsetVector is written as 0.00329779 deg/px, while a 109164 px globe
+# needs 360/109164 = 0.0032977904...; the 4.8e-9 deg/px rounding shortfall
+# accumulates to 5.24e-5 deg over the width, i.e. 0.016 of one pixel.
+DETAIL_BOX = {'path': 'detail-jp2-rounding', 'width': 109164, 'height': 54582,
+              'count': 1, 'dtype': 'uint8', 'pxPerDeg': 303.23337750432864,
+              'west': -180.0, 'north': 90.0,
+              'east': 179.99994756, 'south': -89.99997378}
+
+
+def test_the_extent_box_absorbs_the_sources_rounded_pixel_size():
+    """0.016 px of decimal rounding must not be read as a broken georeference."""
+    contract.assert_contract(DETAIL_BOX, contract.EXPECTED_DETAIL)
+
+
+def test_the_extent_box_still_rejects_a_whole_pixel_of_drift():
+    """One pixel at 303 ppd is 0.0033 deg -- ~20x the rounding budget."""
+    with pytest.raises(AssertionError, match='east'):
+        contract.assert_contract(dict(DETAIL_BOX, east=179.99665),
+                                 contract.EXPECTED_DETAIL)
+    with pytest.raises(AssertionError, match='south'):
+        contract.assert_contract(dict(DETAIL_BOX, south=-89.99665),
+                                 contract.EXPECTED_DETAIL)

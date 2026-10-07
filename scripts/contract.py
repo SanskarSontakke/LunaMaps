@@ -9,6 +9,13 @@ Verified from the files themselves:
     validated by aspect ratio only.
 Both origins are normalised to pixel-corner form, and the convention used is
 recorded rather than assumed.
+
+Measured on the fetched files (see docs/superpowers/specs/fetch-log.md): GDAL's
+JP2OpenJPEG driver resolves the GML centre-referenced origin above to the
+pixel-corner transform (-180.0, +90.0) with CRS ESRI:104903, so the JP2 reports
+originConvention 'corner' and gridReadFrom 'raster'; the centre branch stays
+under test because the file's own GML box is centre-referenced, and any source
+that hands through that value verbatim must still normalise.
 """
 from __future__ import annotations
 import rasterio
@@ -80,8 +87,18 @@ def assert_contract(actual: dict, expected: dict) -> None:
         raise AssertionError(
             f"pxPerDeg: got {actual['pxPerDeg']:.6f} expected "
             f"{expected['pxPerDeg']:.6f} tol {tol} ({actual['path']})")
+    # east/south are *derived* (west + width/pxPerDeg), so their accuracy is
+    # capped by the pixel size the source declares. The detail JP2 declares
+    # 0.00329779 deg/px where a 109164 px globe needs 360/109164 =
+    # 0.0032977904, and that 4.8e-9 deg/px rounding accumulates to a 5.2e-5 deg
+    # (0.016 px) shortfall across the width. An absolute 1e-6 deg box tolerance
+    # is therefore unreachable for this file and would reject a correct
+    # georeference; the box is instead bounded by a fraction of one pixel,
+    # which a whole pixel of drift still fails by ~20x.
+    box_tol = max(expected.get('boxTol', 1e-6), 0.05 / actual['pxPerDeg'])
     for key, want in (('west', -180.0), ('north', 90.0),
                       ('east', 180.0), ('south', -90.0)):
-        if abs(actual[key] - want) > 1e-6:
+        if abs(actual[key] - want) > box_tol:
             raise AssertionError(
-                f'{key}: got {actual[key]!r} expected {want!r} ({actual["path"]})')
+                f'{key}: got {actual[key]!r} expected {want!r} '
+                f'(box tol {box_tol:.3e}, {actual["path"]})')
