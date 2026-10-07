@@ -1,1 +1,217 @@
-{}
+{
+ "schema": 1,
+ "generatedAt": "2026-10-07T05:55:25+00:00",
+ "grid": {
+  "tileSize": 512,
+  "colsFactor": "2^(L+1)",
+  "rowsFactor": "2^L",
+  "yOrigin": "north",
+  "lonDomain": "180",
+  "latitudeType": "planetocentric",
+  "radiusMeters": 1737400.0,
+  "flattening": 0.0,
+  "prjWkt": "GEOGCS[\"GCS_Moon_2000\",DATUM[\"D_Moon_2000\",SPHEROID[\"Moon_2000_IAU_IAG\",1737400.0,0.0],PRIMEM[\"Reference_Meridian\",0.0],UNIT[\"Degree\",0.0174532925199433]]"
+ },
+ "levels": [
+  {
+   "L": 0,
+   "cols": 2,
+   "rows": 1,
+   "mPerPx": 10660.55
+  },
+  {
+   "L": 1,
+   "cols": 4,
+   "rows": 2,
+   "mPerPx": 5330.28
+  },
+  {
+   "L": 2,
+   "cols": 8,
+   "rows": 4,
+   "mPerPx": 2665.14
+  },
+  {
+   "L": 3,
+   "cols": 16,
+   "rows": 8,
+   "mPerPx": 1332.57
+  },
+  {
+   "L": 4,
+   "cols": 32,
+   "rows": 16,
+   "mPerPx": 666.28
+  },
+  {
+   "L": 5,
+   "cols": 64,
+   "rows": 32,
+   "mPerPx": 333.14
+  },
+  {
+   "L": 6,
+   "cols": 128,
+   "rows": 64,
+   "mPerPx": 166.57
+  },
+  {
+   "L": 7,
+   "cols": 256,
+   "rows": 128,
+   "mPerPx": 83.29
+  }
+ ],
+ "sources": [
+  {
+   "name": "LRO_WAC_Mosaic_Global_303ppd_v3.jp2",
+   "url": "https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/LRO_WAC_Mosaic_Global_303ppd_v3.jp2",
+   "role": "detail",
+   "bytes": 2500331610,
+   "sha256": "3c0bf3c5e34d52ec95633b960c92ddd97024eca168c0d5bc41e84862d6c05e95",
+   "reused": true,
+   "sidecars": {
+    "LRO_WAC_Mosaic_Global_303ppd_v3.jp2.aux.xml": {
+     "ok": true,
+     "bytes": 5248
+    }
+   },
+   "sha256Source": "computed",
+   "sha256Verified": true,
+   "specMismatch": false,
+   "fetchedAt": "2026-10-07T01:35:41+00:00"
+  },
+  {
+   "name": "lroc_color_poles.tif",
+   "url": "https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color_poles.tif",
+   "role": "color",
+   "bytes": 518090428,
+   "sha256": "15a6b44b26dc963123ea6e14c4e1e193daa00162d8b40ac36bf3cc0e0740d287",
+   "reused": true,
+   "sidecars": {},
+   "sha256Source": "computed",
+   "sha256Verified": true,
+   "specMismatch": false,
+   "fetchedAt": "2026-10-07T01:35:41+00:00"
+  },
+  {
+   "name": "MOON_nomenclature_center_pts.zip",
+   "url": "https://asc-planetarynames-data.s3.us-west-2.amazonaws.com/MOON_nomenclature_center_pts.zip",
+   "role": "labels",
+   "bytes": 23845070,
+   "sha256": "ac7a198add0cd6094ac9645d2416a8ae755869d3f7afd8a9cc01e4a6cbd780f1",
+   "reused": true,
+   "sidecars": {},
+   "sha256Source": "computed",
+   "sha256Verified": true,
+   "specMismatch": false,
+   "fetchedAt": "2026-10-07T01:35:41+00:00"
+  }
+ ],
+ "layers": {
+  "paper": {
+   "top": 6,
+   "tiles": 10922,
+   "bytes": 472094745,
+   "quality": 85,
+   "photometric": "MINISBLACK",
+   "detailGain": null
+  },
+  "photo": {
+   "top": 6,
+   "tiles": 10922,
+   "bytes": 455311811,
+   "quality": 85,
+   "photometric": "YCbCr",
+   "detailGain": 0.4
+  }
+ },
+ "timings": {
+  "bakeSeconds": 10680.5
+ },
+ "capabilities": {
+  "rasterio": "1.5.2",
+  "drivers": {
+   "detail": {
+    "open": true,
+    "shape": [
+     54582,
+     109164
+    ],
+    "count": 1,
+    "dtypes": [
+     "uint8"
+    ],
+    "crs": "ESRI:104903",
+    "transform": [
+     0.00329779,
+     0.0,
+     -180.0,
+     0.0,
+     -0.00329779,
+     90.0,
+     0.0,
+     0.0,
+     1.0
+    ],
+    "driver": "JP2OpenJPEG",
+    "nodata": [
+     null
+    ],
+    "decode_min": 0,
+    "decode_max": 77
+   },
+   "color": {
+    "open": true,
+    "shape": [
+     13680,
+     27360
+    ],
+    "count": 4,
+    "dtypes": [
+     "uint8",
+     "uint8",
+     "uint8",
+     "uint8"
+    ],
+    "crs": "None",
+    "transform": [
+     1.0,
+     0.0,
+     0.0,
+     0.0,
+     1.0,
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ],
+    "driver": "GTiff",
+    "nodata": [
+     null,
+     null,
+     null,
+     null
+    ],
+    "decode_min": 169,
+    "decode_max": 188
+   },
+   "labels": {
+    "archive": true,
+    "entries": 6,
+    "members": [
+     "MOON_nomenclature_center_pts.shp",
+     "MOON_nomenclature_center_pts.shx",
+     "MOON_nomenclature_center_pts.dbf",
+     "MOON_nomenclature_center_pts.cpg",
+     "MOON_nomenclature_center_pts.prj",
+     "metadata_nomenclature_points_MOON.xml"
+    ],
+    "crcOk": true,
+    "badFile": null,
+    "isRaster": false,
+    "note": "shapefile bundle consumed by scripts/labels.py; not a raster, so no GDAL driver is involved. crcOk is ZipFile.testzip(): every member inflated and CRC-32 checked"
+   }
+  }
+ }
+}

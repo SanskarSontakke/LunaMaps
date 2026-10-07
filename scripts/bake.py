@@ -20,9 +20,17 @@ from composite import chroma_detail
 
 TILE = grid.TILE
 OUT_DEFAULT = 'public/tiles'
-# Measured bits/pixel for lunar albedo at q85; Tier A replaces these with the
-# real numbers from the manifest after the first bake.
-BITS_PER_PIXEL = {'paper': 0.55, 'photo': 1.35}
+# MEASURED, not guessed: Tier A both layers at q85, from the committed
+# public/tiles/manifest.json written by the 2 h 58 min bake recorded in
+# docs/superpowers/specs/bake-log.md §4. bits = bytes * 8 / (512 * 512) over the
+# whole layer (paper 472,094,745 B / 10,922 tiles = 43,224 B/tile; photo
+# 455,311,811 B / 10,922 = 41,688 B/tile). The previous placeholders (0.55 /
+# 1.35) predicted 0.68 GB against a measured 0.93 GB, i.e. they under-called
+# Tier A by 36% because paper was 2.4x too low; Task 17's disk guard scales off
+# these numbers, so they are the real ones now. Averaging over all levels makes
+# a marginal level like L7 slightly over-estimated (L6 alone is 1.22 bits/px),
+# which is the safe direction for a disk guard.
+BITS_PER_PIXEL = {'paper': 1.3191, 'photo': 1.2722}
 
 
 def read_world_rows(ds, L: int, wr0: int, wr1: int, indexes, resampling: str):
