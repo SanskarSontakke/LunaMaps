@@ -1,13 +1,17 @@
 'use client';
 import { useEffect, useState } from 'react';
 import type { Manifest, SourceRecord } from '@/types';
-import { MOON_RADIUS_M, TILE_SIZE } from '@/lib/grid';
+import { MAX_TOP_LEVEL, MOON_RADIUS_M, TILE_SIZE } from '@/lib/grid';
 
 const EXPECTED_SCHEMA = 1;
-// The baked pyramids span levels 0..7. A layer's `top` becomes Cesium's
-// maximumLevel (moon.ts), so an out-of-range or non-integer value makes the
-// renderer request tiles that were never written. Refuse the whole manifest.
-const MAX_TOP = 7;
+// The baked pyramids span levels 0..MAX_TOP_LEVEL. A layer's `top` becomes
+// Cesium's maximumLevel (moon.ts), so an out-of-range or non-integer value makes
+// the renderer request tiles that were never written. Refuse the whole manifest.
+// This used to be a local `const MAX_TOP = 7`, a second copy of `grid.MAX_TOP_LEVEL`
+// (which is `scripts/grid.py`'s MAX_TOP_LEVEL) with nothing comparing them; the
+// number now has one source and `src/test/grid.test.ts` pins it to the golden
+// vectors the Python grid generates.
+const MAX_TOP = MAX_TOP_LEVEL;
 
 const isBakedTop = (v: unknown): v is number =>
   typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_TOP;

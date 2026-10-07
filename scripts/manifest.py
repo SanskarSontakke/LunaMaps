@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import contract
 import grid
 
 
@@ -53,11 +54,17 @@ def base_manifest(levels, generated_at: str | None = None) -> dict:
             'latitudeType': 'planetocentric',
             'radiusMeters': grid.MOON_RADIUS_M,
             'flattening': 0.0,
-            'prjWkt': (
-                'GEOGCS["GCS_Moon_2000",DATUM["D_Moon_2000",'
-                'SPHEROID["Moon_2000_IAU_IAG",1737400.0,0.0],'
-                'PRIMEM["Reference_Meridian",0.0],'
-                'UNIT["Degree",0.0174532925199433]]'),
+            # MUST FIX 4: this used to be a hand-retyped copy of the CRS string,
+            # and it was MALFORMED -- five '[' against four ']', because the
+            # `DATUM[` it opened was never closed. That nested PRIMEM and UNIT
+            # inside DATUM, so any consumer that parsed the WKT read a different
+            # ellipsoid surface than the one `contract.py` and the shipped
+            # gazetteer `.prj` describe. `assets.ts` only asks that the field be
+            # non-empty text, so nothing in the stack could notice. There is now
+            # exactly one source for it, and
+            # `test_manifest_prj_wkt_is_the_contract_string` pins it on both the
+            # writer and the delivered artifact.
+            'prjWkt': contract.MOON_WKT,
         },
         'levels': [{'L': L, 'cols': grid.level_cols(L), 'rows': grid.level_rows(L),
                     'mPerPx': round(grid.m_per_px(L), 2)} for L in levels],

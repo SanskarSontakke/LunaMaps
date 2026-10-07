@@ -394,6 +394,66 @@ def test_the_shipped_manifest_matches_the_anchor_it_is_quoted_from():
         'reindex', {}) else True
 
 
+def test_the_manifest_prj_wkt_is_the_contract_string(tmp_path):
+    """MUST FIX 4: `base_manifest()` used to hand-type its own copy of the CRS
+    WKT, and the copy was MALFORMED -- five '[' against four ']', because the
+    `DATUM[` was never closed, which nests PRIMEM and UNIT inside DATUM. It went
+    unnoticed because every consumer only asks that the field be non-empty text
+    (`assets.ts`'s `isText(prjWkt)`, mirrored by `parse_manifest_app` below).
+
+    `contract.MOON_WKT` is now the single source, so this pins three things: the
+    writer's output, the delivered artifact, and the CRS the upstream gazetteer
+    declares for its own geometry (read out of the tracked fixture zip, no
+    extraction). All three must be one string, and that string must be balanced.
+    """
+    from manifest import base_manifest
+    wkt = base_manifest([0])['grid']['prjWkt']
+    assert wkt == contract.MOON_WKT, 'the manifest re-typed the CRS instead of ' \
+                                     'importing the contract'
+    shipped = json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8'))
+    assert shipped['grid']['prjWkt'] == contract.MOON_WKT, \
+        'the committed manifest still carries the malformed WKT'
+    # The defect itself, pinned structurally rather than by a golden string only.
+    for label, s in (('contract', contract.MOON_WKT),
+                     ('shipped manifest', shipped['grid']['prjWkt'])):
+        assert s.count('[') == s.count(']'), \
+            f'{label}: unbalanced WKT ({s.count("[")} [ vs {s.count("]")} ])'
+        # DATUM must be CLOSED before PRIMEM opens, or PRIMEM/UNIT nest inside it.
+        assert ']],PRIMEM' in s, f'{label}: DATUM is not closed before PRIMEM'
+        assert s.count('GEOGCS[') == s.count('DATUM[') == 1
+    # The geometry's own declaration, from the tracked fixture zip (read in
+    # memory; the extracted shapefile directory stays git-ignored).
+    import zipfile
+    with zipfile.ZipFile(REPO / 'tests' / 'fixtures' /
+                         'moon_nomenclature_fixture.zip') as z:
+        names = [n for n in z.namelist() if n.lower().endswith('.prj')]
+        assert names, 'the fixture carries no .prj to compare against'
+        declared = z.read(names[0]).decode('utf-8-sig').strip()
+    assert declared == contract.MOON_WKT, \
+        'the gazetteer declares a different CRS than the manifest writes'
+
+
+def test_the_app_validator_constants_are_the_grids_own_numbers():
+    """MUST FIX 4's other half: the three numbers the review flagged as unpinned
+    duplications. `APP_*` below transcribe `src/lib/assets.ts`, so they are
+    asserted equal to the Python grid they are supposed to mirror rather than
+    left as parallel literals that can silently drift."""
+    assert APP_MAX_TOP == grid.MAX_TOP_LEVEL
+    assert APP_TILE_SIZE == grid.TILE
+    assert float(APP_MOON_RADIUS_M) == grid.MOON_RADIUS_M
+    assert float(APP_MOON_RADIUS_M) == contract_and_gazetteer_radius_m()
+
+
+def contract_and_gazetteer_radius_m() -> float:
+    """The radius the CRS string itself states, so the four copies of that number
+    (grid.py, grid.ts, moon.ts, assets.ts's validator) are tied to the datum the
+    manifest publishes and the labels are measured in."""
+    import re
+    m = re.search(r'SPHEROID\["[^"]+",([\d.]+),', contract.MOON_WKT)
+    assert m, contract.MOON_WKT
+    return float(m.group(1))
+
+
 def test_reindex_rebuilds_from_disk_and_keeps_the_gate_verdicts(tmp_path,
                                                                monkeypatch,
                                                                capsys):

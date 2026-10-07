@@ -1,11 +1,52 @@
 import { readFileSync } from 'node:fs';
 import { expect, it, describe } from 'vitest';
 import {
+  MAX_TOP_LEVEL,
+  MOON_RADIUS_M,
+  TILE_SIZE,
   levelCols, levelRows, mPerPx, tileBounds, lonToTileX, latToTileY,
   cameraHeightForLevel, worldPxOf, worldPxWidth,
 } from '@/lib/grid';
+import { MOON_RADIUS_M as CESIUM_MOON_RADIUS_M, TILE_SIZE as CESIUM_TILE_SIZE } from
+  '@/lib/cesium/moon';
 
 const vecs = JSON.parse(readFileSync('test-vectors/grid.json', 'utf8'));
+
+/**
+ * MUST FIX 4: the constants the app gates Cesium's `maximumLevel`, the ellipsoid
+ * and the manifest validator on used to exist as independent literals in three
+ * files (`assets.ts`'s `MAX_TOP = 7`, `moon.ts`'s `MOON_RADIUS_M`/`TILE_SIZE`,
+ * `grid.ts`'s copies). Nothing compared them, so a change in one was silent.
+ *
+ * They are pinned here against `test-vectors/grid.json`, which
+ * `scripts/gen_grid_vectors.py` generates from the PYTHON grid (`grid.TILE`,
+ * `grid.MOON_RADIUS_M`, and the levels of `grid.MAX_TOP_LEVEL`), i.e. the same
+ * anchor the numeric grid mirror is tested against — so these assertions compare
+ * the constants to the contract, not to each other.
+ */
+describe('single-source constants', () => {
+  it('MAX_TOP_LEVEL is the depth of the golden vectors (Python MAX_TOP_LEVEL)', () => {
+    const levels = Object.keys(vecs.mPerPx).map(Number);
+    expect(Math.max(...levels)).toBe(MAX_TOP_LEVEL);
+    expect(levels.length).toBe(MAX_TOP_LEVEL + 1);
+    expect(MAX_TOP_LEVEL).toBe(7);
+  });
+  it('the Cesium module and the grid module hold the same radius and tile size', () => {
+    expect(CESIUM_MOON_RADIUS_M).toBe(MOON_RADIUS_M);
+    expect(CESIUM_TILE_SIZE).toBe(TILE_SIZE);
+    expect(vecs.moonRadiusM).toBe(MOON_RADIUS_M);
+    expect(vecs.tileSize).toBe(TILE_SIZE);
+  });
+  it('the radius is the one the CRS string states, to the metre', () => {
+    // Same check the Python suite runs on `contract.MOON_WKT`'s SPHEROID radius.
+    const wkt = String(
+      JSON.parse(readFileSync('public/tiles/manifest.json', 'utf8')).grid.prjWkt,
+    );
+    const m = /SPHEROID\["[^"]+",([\d.]+),/.exec(wkt);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBe(MOON_RADIUS_M);
+  });
+});
 
 describe('TS grid matches the Python implementation', () => {
   it('level shapes', () => {
