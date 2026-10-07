@@ -279,7 +279,17 @@ RED   y  721..723   45 S stripe = row 1's own mid-line
 WHITE y  724..787   contains exactly TWO grey bands, y 738..749 and y 766..772
 ```
 
-The equator (white → black boundary) falls at y=448 and the disk spans y≈87..809, so the
+The equator (white → black boundary) falls at y=448 and the **southern limb at y≈788** — the
+centre-line scan above ends its last white run at 787, so nothing measured reaches 809. The
+northern limb is not directly readable from that scan, because y 0..170 is a single black run
+that conflates the page background with the northern black cap; the projection is symmetric
+about the equator (the ±45° stripes sit at 173 and 722, i.e. 275 and 274 px either side of
+y=448), which puts the north limb at 448 − (788 − 448) ≈ **108** and the disk radius at
+≈340 px. An independent PIL re-measurement of the same image gave edges at **~108..788**, and
+that is the figure this line now cites; the earlier `y≈87..809` was a misquotation of the scan
+above, recorded as a parked documentation defect for this sweep in the controller's ledger
+(`.superpowers/sdd/2026-10-06-lunar-map-explorer/progress.md`, Task 2 row). The conclusion is
+identical under either pair: 448 is the midpoint of 108..788 just as it was of 87..809, so the
 equator sits at the disk's vertical centre — the same geometry the projection numbers above
 predict.
 
@@ -403,9 +413,11 @@ node scripts/g1_tiling_probe.mjs                      # criteria 3 + 4, headless
 npm run dev -- -p 3100                                # then open http://localhost:3100
 ```
 
-`scripts/g1_tiling_probe.mjs` is tracked as of the review round, so a fresh clone can
-reproduce criteria 3 and 4 without it. It is a **diagnostic, not a test**: it prints values
-and exits 0; Task 3 turns the same claims into assertions.
+`scripts/g1_tiling_probe.mjs` is tracked as of the review round, so a fresh clone can reproduce
+criteria 3 and 4 **with it** — running the committed probe is exactly the reproduction, and
+before it was committed they could not be reproduced from a clone at all. It is a
+**diagnostic, not a test**: it prints values and exits 0; Task 3 turns the same claims into
+assertions.
 
 Expected output of the generator and the probe: `wrote 10 probe tiles to public\tiles\probe`
 (exit 0), and `L1 row 0 north deg : 90` / `L1 rowCount 2 / colCount 4`. To confirm the

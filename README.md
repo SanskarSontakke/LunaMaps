@@ -71,9 +71,14 @@ node scripts/g1_tiling_probe.mjs                        # Gate G1 criteria 3+4, 
 .venv/Scripts/python.exe scripts/g2_geometry_probe.py --sources   # + source-vs-tile check
 ```
 
-The probes print and always exit 0: diagnostics, not tests. `npm run proof` writes `albedoHistogram` and
-`geometryProof` into the tracked `manifest.json`, so it dirties the tree. `npm run test`, run on this
-branch once Task 15 had landed: vitest **209 passed / 15 files**, pytest **168 passed**.
+The probes print and always exit 0: diagnostics, not tests. `npm run proof` still records the gate by
+updating `albedoHistogram` and `geometryProof` in the tracked `public/tiles/manifest.json`, but since
+`334b6bb` it writes through `manifest.write_manifest` - the one writer this repo has for that artifact, which
+emits LF bytes plus a final newline - instead of `Path.write_text`, so it no longer re-typesets the whole
+tracked file to CRLF. It changes only those two keys: run on this tree it left `manifest.json` byte-identical
+(md5 `721e29a91a8dac525557fc03d144f456` before and after) and `git status` empty, so the tree is dirtied only
+when the gate's numbers actually move. `npm run test` at this commit: vitest **222 passed / 15 files**, pytest
+**178 passed**, `npx tsc --noEmit` clean (209 / 168 was the state when Task 15 landed).
 
 **Gate G1** proves Cesium boots on self-hosted assets and that the geodetic `y` origin is what the bake
 writes: `row0north = 90.000°`, `row1north = 0°`, L1 grid `4 x 2`, L2 `8 x 4`, `tileWidth = 512`, radii
@@ -133,12 +138,18 @@ is U+2019 on purpose):
 ## Known limits and open items
 
 - **Polar albedo hole (upstream, not a bake defect).** 35,454,232 of 536,870,912 level-5 `paper` pixels -
-  **6.60%** - read DN 0, concentrated above `|lat| 73°` (rows 0-2 and 29-31; 68 tiles more than 50% black,
+  **6.6039%** - read DN 0, concentrated above `|lat| 73°` (rows 0-2 and 29-31; 68 tiles more than 50% black,
   all there). Sampling the source confirms it: 13x13 windows at 0°E / `±89.5°` are **100.0%** and **95.9%**
-  exact zeros against 0.0% at the equator. So **in paper mode the poles look punched out** - black fields in
-  a cream sheet, ~10% of each hemisphere's disc - while globe mode loses detail instead of going black,
-  because the colour base fills the poles. Deliberately not muted: a veil lifting black toward cream would
-  fabricate albedo the source does not have.
+  exact zeros against 0.0% at the equator. Per hemisphere, counted off the delivered tiles with the same read
+  `scripts/proof.py` uses (`Image.open(...).convert('L')`): the north's rows 0-15 hold 15,622,097 zero pixels
+  of 268,435,456 = **5.8%**, the south's rows 16-31 hold 19,832,135 = **7.4%**, and the dense cap alone (rows
+  0-2, `|lat| >= 73.1°`) is **4.9%** of a hemisphere. An earlier revision of this bullet said "~10% of each
+  hemisphere's disc" - the same wording sits at `gate-G2.md` line 442 and in `verify-16.md` - and **no
+  measurement supports it**: 10.9% only appears if you divide *both* polar caps (rows 0-2 + 29-31) by *one*
+  hemisphere, which is not a per-disc statement, so the figure is dropped. So **in paper mode the poles look
+  punched out** - black fields in a cream sheet, denser above `|lat| 73°` - while globe mode loses detail
+  instead of going black, because the colour base fills the poles. Deliberately not muted:
+  a veil lifting black toward cream would fabricate albedo the source does not have.
 - **20 pinned gazetteer geometry defects.** 19 of the 9,087 records have a centre outside their own bbox
   (18 sub-half-degree precision mismatches plus `Statio Tianhe`'s genuine 90.9° sign error) and `Brill`
   straddles the `±180` vs `0-360` convention. `scripts/labels.py` ships those with `bbox: null` so nothing
@@ -151,10 +162,22 @@ is U+2019 on purpose):
 - **Not yet verified in a browser.** No visible browser surface existed during implementation
   (`NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`, viewport `0x0`, `visibilityState=hidden`), so each item below is
   unit-tested or numerically probed and still needs a real tab:
-  - the **smooth Paper↔Globe morph animation landing on its own**: every recorded toggle finished through
-    the `completeMorph()` fallback (4.0-8.7 s), never via `scene.mode === target`. End state and camera
-    preservation are proven, the transition is not; the deadline was raised to 15 s to make a jump-cut less
-    likely, not to rule one out.
+  - the **Paper↔Globe morph, in whole and in part**: nothing about it has been observed under the code that
+    ships today. What `verify-10.md` records - every toggle finishing through the `completeMorph()` fallback
+    in 4.0-8.7 s, and the camera-preservation table - was measured against the *previous* build, whose pump
+    called `scene.render(wallClock)` under a 4 s deadline. That pump advanced nothing: in Cesium 1.146 the
+    morph tweens are updated only by `Scene.initializeFrame()`, whose sole caller in the render path is
+    `CesiumWidget.render()`; the fix pumps through `viewer.cesiumWidget.render()` on a `setTimeout` loop and
+    adds a wall-clock watchdog on the morph **queue** (`MORPH_QUEUE_DEADLINE_MS`), commit `13322e9`, with the
+    harness made to drive a mode change through the same latch a click does in `b1623f2`. The one live probe
+    made before that fix saw `scene.mode` hold `MORPHING` for minutes. So the transition is open, and the
+    **end state is open too** - the old 4 s-deadline measurements do not transfer to the shipped mechanism.
+    To close it: `npm run dev` (not a built `start` - the harness globals are dev-only), a **visible** tab,
+    **one click on Paper**, then read `__moonHarness.sceneMode()` (must become `SCENE2D`) and
+    `document.querySelector('#cesiumContainer').dataset.mode` (must follow it to `paper`), and say out loud
+    whether it animated or snapped. The deadline now sits at 15 s, which makes a jump-cut in a visible tab
+    less likely, not impossible; and `CesiumWidget.render()` is gated on `_canRender` (canvas size non-zero),
+    so a 0x0 tab still cannot animate a morph at all.
   - the **three failure panels** of plan Task 15 and spec §4.4 (unbaked tiles/manifest, missing Cesium
     static assets, no WebGL2) have never been forced in a real tab. `docs/superpowers/specs/verify-15.md`
     says so itself: the boot order and the panels' text are proven with injected fakes and
@@ -164,4 +187,27 @@ is U+2019 on purpose):
     paper+photo at L2 and L6) do not exist, so no claim is made about how either mode looks.
   - also owed: label subtlety and overlap in a real view, real mouse-drag behaviour, the `±180` strip and
     the poles viewed as pixels, and frame rate during drag-rotate (GPU-dependent, reported not asserted).
+- **Spec §4.5's performance budget is neither implemented nor measured.** The budget asks for at most 16
+  simultaneous tile requests (enforced "through Cesium's `maximumScreenSpaceErrors` / imagery request
+  scheduling rather than by hoping the browser queues politely"), median tile response < 150 ms, L0 painted
+  < 3 s after first paint, and a tab under 1.2 GB after 50 tile fetches. None of it exists in this build:
+  `grep -rn "maximumScreenSpaceError" src/` returns no hits; `makeProvider` (`src/lib/cesium/moon.ts`) passes
+  only `url`/`tilingScheme`/`tileWidth`/`tileHeight`/`minimumLevel`/`maximumLevel`/`rectangle`/`credit` to
+  `UrlTemplateImageryProvider`, so Cesium's own default error threshold and default request scheduling decide
+  how many tiles are in flight; and `createMoonViewer` sets no imagery request limit at all (its scene knobs
+  are `requestRenderMode: true`, `maximumRenderTimeChange: Infinity` and the camera controller's zoom
+  bounds). Nothing on either side has been timed either - no tile-response measurement, no in-flight request
+  count and no memory sample appears in `gate-G1.md`, `gate-G2.md`, any `verify-*.md`, or the controller's
+  sweep. This is an unstarted requirement, not a passing one.
+- **`npm run dev` and `npm run build` require network at compile time.** `src/app/layout.tsx` imports `Geist`
+  and `Geist_Mono` from `next/font/google`, so the Next compiler fetches those font files from Google on
+  every `dev` and `build` and self-hosts the result. That cuts directly against the local-first decision this
+  file opens with: an offline fresh clone cannot compile the app, it fails on the font fetch instead of
+  degrading to a system font. It is also paying that cost for nothing - the only consumers of the emitted
+  `--font-geist-sans` / `--font-geist-mono` variables are in `src/app/page.module.css`, which
+  `grep -rn "page.module" src/` shows nothing imports (gate-G1's consequences list already records it as
+  orphaned), while `globals.css` sets `system-ui` stacks directly. Recorded, not fixed, in this pass: the fix
+  is a code change (a `next/font/local` swap with a vendored font, or dropping the import), and because no
+  build in this repo's evidence was ever run offline, the offline failure itself is inferred from how
+  `next/font/google` works rather than observed here.
 - **Open:** Gate G3 (Task 18 sweep) has not been run; the Tier B decision stands as declined.
