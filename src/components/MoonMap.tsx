@@ -3,11 +3,15 @@ import { useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
 import { createMoonViewer, MOON_ELLIPSOID } from '@/lib/cesium/moon';
 import { getCameraState, setLayer, setMode, type CameraState } from '@/lib/cesium/morph';
+import { attachPicking } from '@/lib/cesium/picking';
+import { attachLabels, type LabelSet } from '@/lib/labels/entities';
 import { layerTop, useManifest } from '@/lib/assets';
 import { cameraHeightForLevel } from '@/lib/grid';
 import {
   DEFAULT_LAYER,
   DEFAULT_MODE,
+  type Feature,
+  type FeatureCollection,
   type LayerName,
   type Manifest,
   type Mode,
@@ -35,6 +39,10 @@ export interface MoonHarness {
     headingRad?: number,
   ): void;
   imageryCount(): number;
+  labelCount(): number;
+  shownEntities(): number;
+  refreshLabels(heightM?: number): void;
+  picked(): Feature | null;
 }
 
 // Cesium.SceneMode enum values as names (MORPHING=0 … SCENE3D=3), for readable
@@ -53,7 +61,11 @@ const topOf = (manifest: Manifest, layer: LayerName) =>
 export default function MoonMap() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
+  const labelsRef = useRef<LabelSet | null>(null);
+  const pickedRef = useRef<Feature | null>(null);
   const { manifest, error } = useManifest();
+  const [features, setFeatures] = useState<FeatureCollection | null>(null);
+  const [, setSelectedFeature] = useState<Feature | null>(null);
   const [mode, setModeState] = useState<Mode>(DEFAULT_MODE);
   const [layer, setLayerState] = useState<LayerName>(DEFAULT_LAYER);
   // What the live viewer was built with and has since been driven to. The
@@ -85,7 +97,6 @@ export default function MoonMap() {
       orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
     });
     viewerRef.current = viewer;
-    applied.current = { mode, layer };
     globalThis.__moonViewer = viewer;
     globalThis.__moonHarness = {
       camera: () => (viewer.isDestroyed() ? null : getCameraState(viewer)),
@@ -115,6 +126,14 @@ export default function MoonMap() {
         viewer.scene.requestRender();
       },
       imageryCount: () => viewer.imageryLayers.length,
+      labelCount: () => labelsRef.current?.count ?? 0,
+      shownEntities: () =>
+        viewer.isDestroyed()
+          ? -1
+          : viewer.entities.values.filter((e) => e.show).length,
+      refreshLabels: (heightM?: number) =>
+        labelsRef.current?.refresh(heightM ?? getCameraState(viewer).height),
+      picked: () => pickedRef.current,
     };
     return () => {
       viewer.destroy();
@@ -144,6 +163,56 @@ export default function MoonMap() {
     applied.current.layer = layer;
     setLayer(viewer, layer, topOf(manifest, layer));
   }, [layer, manifest]);
+
+  // Labels ride in their own file; the map works without them (design §6
+  // failure modes): search and labels disable, the map stays usable.
+  useEffect(() => {
+    let alive = true;
+    fetch('/data/features.json')
+      .then((r) => {
+        if (!r.ok) throw new Error(`features.json HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((fc: FeatureCollection) => {
+        if (alive) setFeatures(fc);
+      })
+      .catch(() => {
+        if (alive) setFeatures(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Attach place names once the viewer and features coexist; drive the
+  // tier/declutter refresh from the camera at 8 Hz and pick on click.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !features || labelsRef.current) return;
+    const labels = attachLabels(viewer, features);
+    labelsRef.current = labels;
+    labels.refresh(getCameraState(viewer).height);
+    let last = 0;
+    const onPostRender = () => {
+      const t = Date.now();
+      if (t - last < 125) return; // throttle to 8 Hz
+      last = t;
+      if (!viewer.isDestroyed()) labels.refresh(getCameraState(viewer).height);
+    };
+    viewer.scene.postRender.addEventListener(onPostRender);
+    const detachPick = attachPicking(viewer, (f) => {
+      pickedRef.current = f;
+      setSelectedFeature(f);
+    });
+    return () => {
+      if (!viewer.isDestroyed()) {
+        viewer.scene.postRender.removeEventListener(onPostRender);
+        labels.destroy();
+      }
+      detachPick();
+      labelsRef.current = null;
+    };
+  }, [features, manifest]);
 
   return (
     <>
