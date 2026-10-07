@@ -34,8 +34,10 @@ known, 0 new`, `curated: 600`, and **no drift** in `public/data/features.json`
 warnings (124 before the review round; the 10 added tests are 7 that read specific
 in-tile blocks of the new `ramp_pyramid` fixture, 2 for the missing-marker failure
 string, and 1 that a failing `main()` leaves `manifest.json` strict-JSON parseable).
-`npx vitest run` → **7 passed**. Re-run after the review round, on the same
-working-tree pyramid: the verdict and every number in the JSON below are unchanged.
+`npx vitest run` → **7 passed** as Task 9 closed (**32** by the end of this review round,
+after Tasks 10–11 added their own; G2 gates no frontend test). Re-run after the review
+round, on the same working-tree pyramid: the verdict and every number in the JSON below
+are unchanged.
 
 ---
 
@@ -458,7 +460,7 @@ npm run bake                            # gitignored public/tiles/**, 10,922 til
 npm run labels                          # regenerate features.json; exits 0, no drift expected
 npm run proof                           # GATE G2 PASS, exit 0; writes albedoHistogram + geometryProof
 .venv/Scripts/python.exe -m pytest scripts/tests -q -W error   # 134 passed, zero warnings
-npx vitest run                                                   # 7 passed
+npx vitest run                                                   # 7 passed at Task 9; 32 now
 .venv/Scripts/python.exe scripts/g2_geometry_probe.py            # the mis-registration tables above
 .venv/Scripts/python.exe scripts/g2_geometry_probe.py --sources  # + the source-vs-tile cross-check
 ```
