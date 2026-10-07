@@ -1,8 +1,15 @@
 # Gate G2 — geometry proof against real imagery
 
 **Task:** 9 of 18 (`task-9-brief.md`), spec §5.1.
-**Run by:** the Task 9 implementation agent, 2026-10-07, against the Tier A bake
-committed in `560a264` (paper + photo, L0–L6, 10,922 tiles each).
+**Run by:** the Task 9 implementation agent, 2026-10-07, against the Tier A tile
+pyramid in the working tree: `public/tiles/paper/**` and `public/tiles/photo/**`,
+L0–L6, 10,922 tiles per layer. **Those tiles are gitignored build output, not a
+commit** — `git ls-files public/tiles` returns `manifest.json` only, and the
+pyramid is produced by `npm run bake` (the bake code is what `560a264` committed).
+Every number below was measured off that working-tree pyramid and can be
+re-measured only by producing it again: `npm run fetch && npm run bake` first, or
+`npm run proof` stops with
+`SystemExit: no paper tiles at level 5 under public/tiles`.
 **Verdict: G2 PASSES.** Every requirement is met with margin, on real LRO WAC
 imagery and the real IAU label set, and the pass is *falsifiable* — the same
 measurements run against deliberately mis-registered imagery produce the wrong
@@ -23,8 +30,12 @@ sign, which is the only reason the pass means anything.
 Commands, verbatim results: `npm run labels` → exit 0, `bbox defects: 19 found, 20
 known, 0 new`, `curated: 600`, and **no drift** in `public/data/features.json`
 (`git diff --stat` empty). `npm run proof` → exit 0, `GATE G2 PASS`.
-`.venv/Scripts/python.exe -m pytest scripts/tests -q -W error` → **124 passed**, zero
-warnings. `npx vitest run` → **7 passed**.
+`.venv/Scripts/python.exe -m pytest scripts/tests -q -W error` → **134 passed**, zero
+warnings (124 before the review round; the 10 added tests are 7 that read specific
+in-tile blocks of the new `ramp_pyramid` fixture, 2 for the missing-marker failure
+string, and 1 that a failing `main()` leaves `manifest.json` strict-JSON parseable).
+`npx vitest run` → **7 passed**. Re-run after the review round, on the same
+working-tree pyramid: the verdict and every number in the JSON below are unchanged.
 
 ---
 
@@ -113,21 +124,33 @@ point was re-read straight out of the source raster
 (`data/raw/LRO_WAC_Mosaic_Global_303ppd_v3.jp2`, 303.2 px/deg, a 13×13 source window ≈
 one L5 pixel) and compared to the tile:
 
-| point | lon, lat | tile DN | source 13×13 mean | source range |
-|---|---|---|---|---|
-| Lacus Mortis | 27.32, 45.13 | **0** | 0.3 | 0–3 |
-| Piccolomini | 32.20, −29.70 | **6** | 5.4 | 0–29 |
-| Hermite | −93.32, 86.17 | **8** | 17.5 | 0–74 |
-| Tycho | −11.22, −43.30 | 54 | 56.9 | 13–123 |
-| Apollo 11 / West | 23.49, 0.67 | 28 | 28.5 | 18–42 |
-| Mare Orientale | −94.67, −19.87 | 56 | 55.5 | 48–61 |
-| Mare Frigoris | −0.01, 57.59 | 47 | 50.9 | 41–63 |
+| point | lon, lat | tile DN | source 13×13 mean | source range | window DN-0 share |
+|---|---|---|---|---|---|
+| Lacus Mortis | 27.32, 45.13 | **0** | 0.3 | 0–3 | 81.7% |
+| Piccolomini | 32.20, −29.70 | **6** | 5.4 | 0–29 | 8.9% |
+| Hermite | −93.32, 86.17 | **8** | 17.5 | 0–74 | 0.6% |
+| Tycho | −11.22, −43.30 | 54 | 56.9 | 13–123 | 0.0% |
+| Apollo 11 / West | 23.49, 0.67 | 28 | 28.5 | 18–42 | 0.0% |
+| Mare Orientale | −94.67, −19.87 | 56 | 55.5 | 48–61 | 0.0% |
+| Mare Frigoris | −0.01, 57.59 | 47 | 50.9 | 41–63 | 0.0% |
+| **North pole** | **0.00, 89.50** | **1** | **0.0** | **0–0** | **100.0%** |
+| **South pole** | **0.00, −89.50** | **0** | **0.1** | **0–2** | **95.9%** |
+| **Equator control** | **0.00, 0.00** | **38** | **38.4** | **29–53** | **0.0%** |
 
-Six of the seven pairs agree within 4 DN. `Hermite` is the exception and it is the polar
+Nine of the ten pairs agree within 4 DN. `Hermite` is the exception and it is the polar
 defect, not a lookup error: its 13×13 source window spans 0–74, so an average-resampled
 pixel there can legitimately land anywhere in that range. What the check actually rules out
 is the signature of a flip, a rotation or an off-by-one tile index — a marker reading a
 value that belongs to a *distant* region — and no marker does that.
+
+The last three rows are the polar evidence the first version of this document lacked, and
+they close the DN-0 question below rather than opening a new one: read straight from
+`LRO_WAC_Mosaic_Global_303ppd_v3.jp2`, the source at 0 E / 89.5 N is **entirely zeros** and
+at 0 E / −89.5 S it is 95.9% zeros, and the tiles say 1 and 0. The equatorial control, read
+with the same code path two rows earlier, agrees to 0.4 DN with no zeros anywhere in its
+window. The black is in the mosaic we sample, not in the sampler. (`Lacus Mortis`, 81.7%
+zeros in a *mid-latitude* window, is the same phenomenon locally: a dark mantle deposit in
+the source, which is why its tile reads 0 and why single-pixel reads are not gating.)
 
 So `Piccolomini 6` is geology (its floor is the dark hummocky landslide terrain), and
 `Lacus Mortis 0` is a dark mantle deposit in the source mosaic. Neither is an indexing
@@ -180,7 +203,7 @@ this document does not pretend otherwise.
 ## The synthetic pyramids in `scripts/tests/test_proof.py`
 
 Real imagery cannot be re-baked per test, so the lookup math and the gate's sign are
-pinned by two synthetic pyramids.
+pinned by three synthetic pyramids.
 
 1. **`indexed_pyramid`** — L1 (4 cols × 2 rows), each tile filled with the constant
    `10*x + y`, so every tile is distinguishable and a wrong index returns a wrong number
@@ -189,28 +212,67 @@ pinned by two synthetic pyramids.
    rows 0 and 1, a missing tile raising `FileNotFoundError` instead of reading 0, and the
    **antimeridian**: `tile_pixel(…, 180.0, …) == tile_pixel(…, −180.0, …)`, with `179.9`
    and `−179.9` still landing in the world's last and first columns.
-2. **`synthetic_globe`** — an L4 pyramid (512 tiles) standing for a correctly registered
+2. **`ramp_pyramid`** — the same L1 grid, but each tile holds a **unique 16 × 16 pattern**
+   (32 px blocks, DN = `block_row * 16 + block_col`) instead of a constant. A constant tile
+   can only falsify the tile *index*: inside it `im[row, col]`, `im[col, row]` and
+   `im[row, 511−col]` all return the same DN, so the within-tile half of `tile_pixel` was
+   unfalsifiable — and the gate on real imagery cannot see such an error either, because a
+   mis-pointed in-tile pixel still sits inside the same 5.6° tile (0.011° of mis-aiming per
+   pixel, far below the medians' resolution). The pattern is asymmetric in row and column,
+   so a transposition or an in-tile mirror changes the read at every off-diagonal block,
+   and its orientation alternates with the parity of `x + y`, so a wrong tile index that
+   keeps the in-tile offset changes it too. Seven tests (`test_in_tile_lookup_reads_the_
+   right_block`, six blocks, plus `test_in_tile_lookup_distinguishes_neighbouring_blocks`)
+   read block centres, 16 px from any edge, so neither a float truncation nor JPEG
+   step-edge ringing can move them.
+3. **`synthetic_globe`** — an L4 pyramid (512 tiles) standing for a correctly registered
    Moon: tiles holding a mare centroid are dark (30 DN), tiles holding a ray crater are
    bright (200 DN), everything else is 120 DN, and the tiles containing the four Apollo 11
    points are dark because they lie inside the Tranquillitatis bbox. `run_proof` on it
    **PASSES**. The same pyramid is then rebuilt **mirrored in row order** (`y → rows−1−y`)
    and **rotated by half the columns** (`x → (x+16) mod 32`) — the two geometry errors,
-   produced by moving the imagery, not the labels — and `run_proof` **FAILS** on both with
-   the contrast/sign failure. That is the gate's falsifiability asserted in CI, not just
-   measured once here.
-3. **Wrap-aware containment is mutation-tested.** A fixture with a seam-crossing
+   produced by moving the imagery, not the labels — and `run_proof` **FAILS** on both. The
+   failure required is now the **sign branch by name** (`'not darker'`, exactly one, with
+   both medians quoted in it), not the old `… or 'contrast' in f` disjunction: both
+   transforms level the medians at 120.0 DN and so also trip the 25 DN floor and the mean
+   checks, which is why deleting `if not mare_med < high_med:` entirely used to leave the
+   suite green. That is the gate's falsifiability asserted in CI, not just measured once.
+4. **Wrap-aware containment is mutation-tested.** A fixture with a seam-crossing
    Tranquillitatis bbox `[170, −5, −170, 5]` puts `West` at 179.5 E *inside* it and
    `Double` at −160 *outside*, and the proof reports exactly one "is outside" failure.
    Verified against a naive `w <= lon <= e`: the naive version reports **two**, falsely
    condemning `West`. So the requirement that the proof import `labels.bbox_contains` is
    pinned by a test that fails if anyone swaps it back.
-4. The marker lists are pinned by **presence and class**, never by measured albedo:
+5. The marker lists are pinned by **presence and class**, never by measured albedo:
    `test_every_marker_resolves_in_the_shipped_label_set` (every name must exist in the
    shipped `features.json`) and `test_marker_lists_are_class_pure` (mare list ⊆
    `labels.MARE_CODES`, highland list all code `AA`, dark-floored craters in neither).
    `test_gate_constants_are_the_planned_ones` pins `MIN_CONTRAST_DN == 25.0`,
    `MIN_SAMPLES == 15`, `PROBE_LEVEL == 5`, so lowering a threshold to get a pass has to
    be a deliberate edit to a passing test.
+
+### Mutation ledger: every new test proven to bite
+
+A pinning test that passes on correct code proves nothing on its own, so each of the five
+was checked against the defect it is supposed to catch. Each mutation was applied to
+`scripts/proof.py`, the suite run, and the file restored (SHA-256 verified against the
+pre-mutation copy each time). `134 passed` is the unmutated state.
+
+| mutation applied to `proof.py` | tests that then failed | before this round |
+|---|---|---|
+| `im[row, col]` → `im[col, row]` (in-tile transposition) | 7 — every `ramp_pyramid` test | **survived**: 124 passed, 18 of them in `test_proof.py` |
+| `im[row, col]` → `im[row, 511 − col]` (in-tile mirror) | the same 7 | **survived** |
+| `if not mare_med < high_med:` branch deleted | 2 — `flipped_or_rotated[flip-y]`, `[rot-180]` | **survived**: the old `… or 'contrast' in f` assertion accepted the floor failure instead, so the sign check itself was unpinned |
+| the `{kind} marker absent from the curated set:` append deleted | 2 — `unresolvable_marker[highland]`, `[mare]` | **survived**: the string existed in code with no test on it (15/19 samples still cleared `MIN_SAMPLES`, so the gate still passed) |
+| `main()` restored to HEAD's write path (no `_json_safe`, default `allow_nan`) | 1 — `a_failing_proof_leaves_a_strictly_parseable_manifest`, on `'NaN' not in text` | **survived**, and the written manifest carried literal `NaN`, which node's `JSON.parse` rejects: `Unexpected token 'N', …"highlandMedian": NaN… is not valid JSON` |
+
+The failure-path fix chosen is **`null`, not "skip the write"**: a skipped write leaves the
+previous PASS numbers in `manifest.json` as stale evidence, which is the worse of the two
+failure modes for an artifact whose whole purpose is to record the verdict. `main()` now
+sanitises non-finite floats to `null` recursively and writes with `allow_nan=False`, so a
+value the sanitiser missed raises *before* `write_text` rather than corrupting the file
+after it. The printed JSON on stdout is sanitised the same way, so a failed run's log is
+parseable too. On a passing run none of this changes a byte — see the re-run below.
 
 ### Two bugs in the brief's test snippet, fixed rather than inherited
 
@@ -302,7 +364,10 @@ Read this before citing the pass.
   third of a pixel and nothing here would see it. That risk is pinned by the corner-origin
   and golden-vector tests in Task 3 (`test-vectors/grid.json`, mirrored in `src/lib/grid.ts`),
   and by G1's `y`-origin criteria. G2's honest resolution floor is ~333 m, and a whole-tile
-  error is what it detects.
+  error is what it detects. The *arithmetic* of the within-tile offset is separately pinned
+  by `ramp_pyramid` (see the mutation ledger), so an in-tile transposition or mirror cannot
+  be introduced silently either — but a real mis-aiming smaller than one tile moves the
+  sample without moving the median, and no test here would notice.
 - **Not a per-row bake error proof below the marker scale.** The gate samples 36 points. A
   swap of two *adjacent* tile rows that both sit inside mare, or two adjacent columns inside
   Oceanus Procellarum, changes nothing measurable. Row/column order errors are caught when
@@ -341,6 +406,13 @@ with 0.0004% exact zeros where `paper/5/0/0.jpg` has mean 35.2 and 32.7% exact z
 hole is therefore in the WAC albedo raster itself, and in photo mode it shows as a loss of
 detail at the poles rather than as black.
 
+That is now measured rather than argued: `scripts/g2_geometry_probe.py --sources` samples
+the source raster at 0 E / ±89.5° and at the equator, and the 13×13 windows there are
+**100.0%** and **95.9%** exact zeros (mean 0.0 and 0.1) against **0.0%** at the equator
+(mean 38.4, where the tile reads 38). The tiles reproduce the source, including its holes.
+Before this round the `--sources` probe sampled no polar point at all, which left the 6.60%
+mass attributed to the source by inference only.
+
 ```
 row  0  lat 84.4..90.0    48.27% zeros       row 31  lat -90.0..-84.4   53.78% zeros
 row  1  lat 78.8..84.4    19.62%             row 30  lat -84.4..-78.8    24.37%
@@ -374,15 +446,28 @@ Why it does not weaken the gate:
 
 ## How to reproduce
 
+The pyramid this gate reads is **build output, not a commit**: `public/tiles/**` is
+gitignored except `manifest.json`, and `data/raw/**` (the 3 GB of sources) is gitignored
+too. A fresh clone therefore has to produce them before G2 can run — otherwise
+`npm run proof` exits with `SystemExit: no paper tiles at level 5 under public/tiles`.
+
 ```bash
 npm install && npm run postinstall      # node toolchain + Cesium assets
+npm run fetch                           # 3 GB into gitignored data/raw, sha256-verified
+npm run bake                            # gitignored public/tiles/**, 10,922 tiles per layer
 npm run labels                          # regenerate features.json; exits 0, no drift expected
 npm run proof                           # GATE G2 PASS, exit 0; writes albedoHistogram + geometryProof
-.venv/Scripts/python.exe -m pytest scripts/tests -q -W error   # 124 passed, zero warnings
+.venv/Scripts/python.exe -m pytest scripts/tests -q -W error   # 134 passed, zero warnings
 npx vitest run                                                   # 7 passed
 .venv/Scripts/python.exe scripts/g2_geometry_probe.py            # the mis-registration tables above
 .venv/Scripts/python.exe scripts/g2_geometry_probe.py --sources  # + the source-vs-tile cross-check
 ```
+
+`npm run fetch` and `npm run bake` are the slow steps (hours, not seconds) and must not be
+re-run to check a number that is already recorded here: `--sources` reads the existing
+`data/raw` raster, and `npm run proof` reads the existing pyramid. The synthetic fixtures in
+`scripts/tests/test_proof.py` are the part that needs no sources at all, and they are what
+CI can run.
 
 `scripts/g2_geometry_probe.py` is a **diagnostic, not a test**: it prints and always exits
 0, in the same role as `scripts/g1_tiling_probe.mjs`. It exists because the flip/rot

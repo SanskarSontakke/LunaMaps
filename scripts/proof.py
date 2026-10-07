@@ -201,9 +201,37 @@ def run_proof(out_dir: str, features_path: str = 'public/data/features.json',
             'histogram': hist, 'checks': checks, 'failures': failures}
 
 
-def main() -> int:
-    out = 'public/tiles'
-    res = run_proof(out)
+def _json_safe(obj):
+    """Replace every non-finite float with None, recursively.
+
+    A FAILING gate has NaN numbers by construction: an unresolvable marker leaves
+    its sample list short, `np.median([])` is NaN, and `round(nan, 2)` is still
+    NaN. `json.dumps` serialises that as the bare token `NaN`, which Python reads
+    back happily and a browser's `JSON.parse` refuses -- so the one command that
+    reports a failure used to corrupt `public/tiles/manifest.json`, a tracked
+    artifact the app loads, at exactly the moment it was most needed. Nulls keep
+    the manifest parseable and keep the failure record. Pair with
+    `allow_nan=False` below, which makes any value this function missed raise
+    before the write rather than after it.
+    """
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
+
+
+def main(out: str = 'public/tiles',
+         features_path: str = 'public/data/features.json',
+         level: int = PROBE_LEVEL) -> int:
+    """Run the gate and record the verdict in the manifest.
+
+    The arguments exist so the failure path can be tested without writing to the
+    tracked pyramid; the shipped call is `main()` from `npm run proof`.
+    """
+    res = _json_safe(run_proof(out, features_path, level))
     mp = Path(out) / 'manifest.json'
     m = json.loads(mp.read_text(encoding='utf-8'))
     m['albedoHistogram'] = res['histogram']
@@ -212,7 +240,7 @@ def main() -> int:
                           'highlandMedian': res['highlandMedian'],
                           'contrast': res['contrast'],
                           'checks': res['checks'], 'failures': res['failures']}
-    mp.write_text(json.dumps(m, indent=1), encoding='utf-8')
+    mp.write_text(json.dumps(m, indent=1, allow_nan=False), encoding='utf-8')
     print(json.dumps(res, indent=1))
     print(f'GATE G2 {"PASS" if res["passed"] else "FAIL"}')
     return 0 if res['passed'] else 4

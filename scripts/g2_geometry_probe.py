@@ -150,7 +150,18 @@ def footprint_medians():
 
 
 def source_crosscheck():
-    """Is a surprising tile value a lookup error or the source's own value?"""
+    """Is a surprising tile value a lookup error or the source's own value?
+
+    The three polar rows are here for the layer's 6.6% exact-zero spike, which
+    sits above |lat| 73 deg. If that mass were ours, the tiles would be black
+    over terrain the source says is lit; they are not. At 0 E / +-89.5 the 13x13
+    source window is 100.0% and 95.9% zeros itself, and the tiles agree with it
+    (DN 1 and DN 0), while an equatorial control read the same way agrees to
+    0.4 DN with 0.0% zeros in the window. So the hole is in the WAC mosaic, and
+    `Hermite` reading 8 at 86.17 N is the same upstream defect rather than a
+    lookup error -- its window spans 0-74, which is why the doc treats it as the
+    loose one.
+    """
     src = Path('data/raw/LRO_WAC_Mosaic_Global_303ppd_v3.jp2')
     if not src.exists():
         print('\nsource cross-check skipped (no data/raw detail jp2)')
@@ -161,16 +172,24 @@ def source_crosscheck():
     pts = [('Lacus Mortis', 27.3191, 45.1348, 0), ('Piccolomini', 32.1986, -29.6998, 6),
            ('Hermite', -93.3152, 86.1659, 8), ('Tycho', -11.2153, -43.2958, 54),
            ('Apollo11 West', 23.4908, 0.6705, 28),
-           ('Mare Orientale', -94.6703, -19.8655, 56)]
-    print('\nsource-vs-tile cross-check (13x13 source window ~ one L5 pixel)')
+           ('Mare Orientale', -94.6703, -19.8655, 56),
+           ('Mare Frigoris', -0.0064, 57.5923, 47),
+           # polar: where the paper layer's DN-0 mass lives, read from the source
+           ('North pole', 0.0, 89.5, 1), ('South pole', 0.0, -89.5, 0),
+           ('Equator control', 0.0, 0.0, 38)]
+    print('\nsource-vs-tile cross-check (13x13 source window ~ one L5 pixel; '
+          '"zero%" is that window\'s share of exact DN-0 source pixels)')
     for name, lon, lat, expected in pts:
         c0 = int(round((lon - C) / A))
         r0 = int(round((lat - F) / E))
         w = ds.read(1, window=rasterio.windows.Window(max(c0 - 6, 0), max(r0 - 6, 0),
                                                       13, 13))
         v = proof.tile_pixel(str(OUT), 'paper', LEVEL, lon, lat)
+        zero = 100.0 * float((np.asarray(w) == 0).mean())
+        flag = '' if v == expected else f'  <-- DIVERGED from the recorded {expected}'
         print(f'  {name:16} tile={v:3} (expected {expected:3})  '
-              f'src mean={w.mean():6.1f} min={w.min():3} max={w.max():3}')
+              f'src mean={w.mean():6.1f} min={w.min():3} max={w.max():3} '
+              f'zero%={zero:5.1f}{flag}')
 
 
 def main() -> int:
