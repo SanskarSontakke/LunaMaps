@@ -19,6 +19,14 @@ import { fuzzySearch } from '@/lib/search';
 import { attachKeyboard } from '@/lib/keyboard';
 import { cameraHeightForLevel } from '@/lib/grid';
 import {
+  createUrlSync,
+  parseHash,
+  viewFromCamera,
+  wasEmptyHash,
+  type UrlSync,
+  type ViewState,
+} from '@/lib/urlState';
+import {
   DEFAULT_LAYER,
   DEFAULT_MODE,
   type Feature,
@@ -65,6 +73,15 @@ export interface MoonHarness {
   selected(): Feature | null;
   /** The live projected scale, straight from `measureMPerPx` (Task 13 sweep). */
   scale(): { mPerPx: number | null; canvas: [number, number] };
+  /**
+   * Task 14 sweep: what the address bar holds, and a forced write of the live
+   * view into it. The forced path exists because the camera → hash direction is
+   * driven by `postRender`, and a frame-starved (hidden / 0×0) tab never fires
+   * it — without `flushHash()` the URL state could only be observed by waiting
+   * for real frames.
+   */
+  hash(): string;
+  flushHash(): string;
 }
 
 // Cesium.SceneMode enum values as names (MORPHING=0 … SCENE3D=3), for readable
@@ -139,13 +156,65 @@ export default function MoonMap() {
     lonDeg: HOME.lonDeg,
   });
 
+  // ---- Task 14: shareable URL state ---------------------------------------
+  // Mirrors of the two fields the frame-driven sync reads. `sceneMode` (the mode
+  // the scene is CONFIRMED to be in) rather than `mode` (the last one clicked),
+  // so a shared link can never promise a mode the morph did not reach — the same
+  // honesty rule Task 10 round 2 put on the toggle. `layer` is applied
+  // synchronously by its effect, so intent and scene cannot disagree.
+  const modeRef = useRef<Mode>(DEFAULT_MODE);
+  const layerRef = useRef<LayerName>(DEFAULT_LAYER);
+  const urlSyncRef = useRef<UrlSync | null>(null);
+  // The camera the hash asked for. Read on mount (no viewer exists yet — the
+  // manifest fetch is async) and applied when the viewer is created.
+  const pendingCameraRef = useRef<ViewState | null>(null);
+  // The feature the hash asked for, resolved once features.json exists.
+  const pendingFeatureRef = useRef<string | null>(null);
+
+  // What the address bar should hold right now: the live camera, the confirmed
+  // mode/layer and the existing selection. Every field is read from state that
+  // already has an owner, so the URL is a *projection* — never a second source of
+  // truth for the card, the mode or the layer.
+  const currentUrlView = useCallback((): ViewState | null => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return null;
+    return viewFromCamera(
+      getCameraState(viewer),
+      modeRef.current,
+      layerRef.current,
+      selectedRef.current?.properties.name,
+    );
+  }, []);
+
+  // Move the camera to a view parsed out of a hash. Nadir, north-up: a shared
+  // link carries no heading/pitch, so the restore must not inherit whatever
+  // tilt the previous session happened to leave on the camera.
+  const applyViewCamera = useCallback((viewer: Cesium.Viewer, v: ViewState) => {
+    viewer.camera.setView({
+      destination: Cesium.Cartesian3.fromDegrees(
+        v.lon,
+        v.lat,
+        v.height,
+        MOON_ELLIPSOID,
+      ),
+      orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
+    });
+    viewer.scene.requestRender();
+  }, []);
+
   // Card state for both entry points (search result and map click). Kept
   // separate from `pickedRef`, which stays strictly "what the last left-click
   // picked" so Task 11's harness metric does not drift.
   const selectFeature = useCallback((f: Feature | null) => {
     selectedRef.current = f;
     setSelectedFeature(f);
-  }, []);
+    // The open card and the address bar are the same fact, so write it now
+    // instead of waiting for a frame: a link copied mid-fly-to still names the
+    // feature. `flush` keeps the differ guard, so this cannot feed a loop, and
+    // before the viewer exists `currentUrlView()` is null — nothing is written.
+    const view = currentUrlView();
+    if (view) urlSyncRef.current?.flush(view);
+  }, [currentUrlView]);
   // Search / pick → card + camera. `flyToFeature` needs a live viewer; with no
   // viewer yet (features can load before the manifest does) the card still
   // opens — the design §6 degraded path, not a silent no-op.
@@ -201,6 +270,26 @@ export default function MoonMap() {
     });
   }, []);
 
+  // Read the shared hash once, on mount, while there is still no viewer. The
+  // camera it names is applied when the viewer is created; mode and layer go
+  // through the same state setters the controls use, so the viewer is *built* in
+  // the shared mode instead of morphing into it a commit later (and the mode
+  // latch is never claimed by anybody other than its own effect).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const hash = window.location.hash;
+    // Empty or malformed (`#nonsense`, `#NaN/0/0/globe/photo`): keep HOME and
+    // the default mode/layer. `parseHash` has already fallen back to
+    // DEFAULT_VIEW, so nothing throws and no error overlay appears — and the
+    // first sync tick below publishes the framing actually on screen.
+    if (wasEmptyHash(hash)) return;
+    const v = parseHash(hash);
+    pendingCameraRef.current = v;
+    if (v.feature) pendingFeatureRef.current = v.feature;
+    setModeState(v.mode);
+    setLayerState(v.layer);
+  }, []);
+
   // The viewer is created only after the manifest has loaded and validated,
   // so `top` is real and a broken build fails in the panel below, not in a
   // half-rendered Cesium scene.
@@ -216,15 +305,28 @@ export default function MoonMap() {
     appliedLayer.current = layer;
     modeLatch.current = createModeLatch(mode);
     setSceneMode(mode);
-    viewer.camera.setView({
-      destination: Cesium.Cartesian3.fromDegrees(
-        HOME.lonDeg,
-        HOME.latDeg,
-        homeHeight(),
-        MOON_ELLIPSOID,
-      ),
-      orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
-    });
+    modeRef.current = mode;
+    layerRef.current = layer;
+    // The shared view wins over HOME when the hash carried one; the hash effect
+    // below has already had its turn (it is declared first), so `pendingCameraRef`
+    // is populated before this runs.
+    const restored = pendingCameraRef.current;
+    if (restored) {
+      applyViewCamera(viewer, restored);
+      // The readout starts at HOME, so a restored view must re-seed it here
+      // rather than printing the old centre until the first rendered frame.
+      updateReadout(viewer);
+    } else {
+      viewer.camera.setView({
+        destination: Cesium.Cartesian3.fromDegrees(
+          HOME.lonDeg,
+          HOME.latDeg,
+          homeHeight(),
+          MOON_ELLIPSOID,
+        ),
+        orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
+      });
+    }
     // requestRenderMode viewer: the home setView changes nothing on screen
     // until a frame is asked for (the same pump setLayer/setMode do).
     viewer.scene.requestRender();
@@ -291,6 +393,12 @@ export default function MoonMap() {
           mPerPx: viewer.isDestroyed() ? null : measureMPerPx(viewer),
           canvas: [viewer.canvas.clientWidth, viewer.canvas.clientHeight],
         }),
+        hash: () => window.location.hash,
+        flushHash: () => {
+          const view = currentUrlView();
+          if (view) urlSyncRef.current?.flush(view);
+          return window.location.hash;
+        },
       };
     }
     return () => {
@@ -350,6 +458,95 @@ export default function MoonMap() {
     appliedLayer.current = layer;
     setLayer(viewer, layer, topOf(manifest, layer));
   }, [layer, manifest]);
+
+  // Keep the sync's mirrors in step with the truth the effects just confirmed.
+  useEffect(() => {
+    modeRef.current = sceneMode;
+  }, [sceneMode]);
+  useEffect(() => {
+    layerRef.current = layer;
+  }, [layer]);
+
+  // Two-way URL sync, attached once there is a live camera to read.
+  //
+  //   camera -> hash : on `postRender`, throttled to 4 Hz, and only when the
+  //                    serialised string differs from what the document holds.
+  //   hash -> camera : on `hashchange` (back/forward traversal, or a link pasted
+  //                    into the address bar).
+  //
+  // Why it cannot loop: `history.replaceState` does not fire `hashchange`; the
+  // inbound path writes exactly the fields the outbound path reads; and
+  // `serialize(parse(serialize(v))) === serialize(v)` makes every written value
+  // its own fixed point, so the guard sees no difference on the next pass. The
+  // hostile-listener case (a `hashchange` that re-syncs on every write) is pinned
+  // in `src/test/urlState.test.ts`, and `lastWritten()` covers the one event that
+  // can carry our own value back — a traversal to a hash we minted.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !manifest || typeof window === 'undefined') return;
+    const sync = createUrlSync({
+      readHash: () => window.location.hash,
+      write: (hash) => window.history.replaceState(null, '', hash),
+    });
+    urlSyncRef.current = sync;
+    const onPostRender = () => {
+      if (viewer.isDestroyed()) return;
+      const view = currentUrlView();
+      if (view) sync.tick(view);
+    };
+    const onHashChange = () => {
+      const hash = window.location.hash;
+      if (hash === sync.lastWritten()) return;
+      if (wasEmptyHash(hash)) return; // cleared by hand: leave the live view alone
+      const v = parseHash(hash);
+      setModeState(v.mode);
+      setLayerState(v.layer);
+      applyViewCamera(viewer, v);
+      if (v.feature) {
+        const hit = (featuresRef.current?.features ?? []).find(
+          (f) => f.properties.name === v.feature,
+        );
+        // An unknown name opens no card; the camera still moves where the link
+        // said, which is the degraded path the design asks for rather than an
+        // error. If the gazetteer has not arrived yet, hand the name to the
+        // hydration effect below (read from the ref, not from a stale closure).
+        selectFeature(hit ?? null);
+        if (!hit && !featuresRef.current) pendingFeatureRef.current = v.feature;
+      } else {
+        selectFeature(null);
+      }
+      // Re-read rather than trust the tween: `setView` is immediate, so this is
+      // the camera the scene actually holds, and the guard makes it a no-op when
+      // it already matches the address bar.
+      const applied = currentUrlView();
+      if (applied) sync.flush(applied);
+    };
+    viewer.scene.postRender.addEventListener(onPostRender);
+    window.addEventListener('hashchange', onHashChange);
+    // Publish the framing that is on screen right now (HOME, or the restored
+    // view) instead of leaving the bar blank until the first throttled frame.
+    onPostRender();
+    return () => {
+      sync.stop();
+      urlSyncRef.current = null;
+      window.removeEventListener('hashchange', onHashChange);
+      if (!viewer.isDestroyed()) {
+        viewer.scene.postRender.removeEventListener(onPostRender);
+      }
+    };
+  }, [manifest, applyViewCamera, currentUrlView, selectFeature]);
+
+  // A shared link that names a feature re-opens the card once the gazetteer has
+  // loaded — through `selectFeature`, the same owner the search result and the
+  // map click use. The URL is never consulted again after this: it is an input to
+  // that state, not a second copy of it.
+  useEffect(() => {
+    const name = pendingFeatureRef.current;
+    if (!name || !features) return;
+    pendingFeatureRef.current = null;
+    const hit = features.features.find((f) => f.properties.name === name);
+    if (hit) selectFeature(hit);
+  }, [features, selectFeature]);
 
   // Labels ride in their own file; the map works without them (design §6
   // failure modes): search and labels disable, the map stays usable.
