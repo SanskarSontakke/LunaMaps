@@ -111,7 +111,7 @@ diagnosis and are **not** gating.
 A single dark read at a bright feature could be a hole in the bake, so each suspicious
 point was re-read straight out of the source raster
 (`data/raw/LRO_WAC_Mosaic_Global_303ppd_v3.jp2`, 303.2 px/deg, a 13×13 source window ≈
-one L5 pixel) and compared to the tile. Tile and source agree everywhere:
+one L5 pixel) and compared to the tile:
 
 | point | lon, lat | tile DN | source 13×13 mean | source range |
 |---|---|---|---|---|
@@ -122,6 +122,12 @@ one L5 pixel) and compared to the tile. Tile and source agree everywhere:
 | Apollo 11 / West | 23.49, 0.67 | 28 | 28.5 | 18–42 |
 | Mare Orientale | −94.67, −19.87 | 56 | 55.5 | 48–61 |
 | Mare Frigoris | −0.01, 57.59 | 47 | 50.9 | 41–63 |
+
+Six of the seven pairs agree within 4 DN. `Hermite` is the exception and it is the polar
+defect, not a lookup error: its 13×13 source window spans 0–74, so an average-resampled
+pixel there can legitimately land anywhere in that range. What the check actually rules out
+is the signature of a flip, a rotation or an off-by-one tile index — a marker reading a
+value that belongs to a *distant* region — and no marker does that.
 
 So `Piccolomini 6` is geology (its floor is the dark hummocky landslide terrain), and
 `Lacus Mortis 0` is a dark mantle deposit in the source mosaic. Neither is an indexing
@@ -269,9 +275,16 @@ table above is what rules out a silent bake fault specifically.
    `tiles` and `level` are added to the returned dict; `samples` keeps its meaning (pixel
    count, 536,870,912).
 2. **`tile_pixel` folds its longitude with `labels.wrap_lon`** — see bug 2 above.
-3. **UTF-8 pinned** on every read/write (`features.json`, `manifest.json`). The label set
-   carries IAU names outside cp1252 (`Mons Rümker`, `Chang’e`), and Windows would otherwise
-   use the locale codec — the same defect `labels.py` documents in its own writer.
+3. **UTF-8 pinned** on every read/write (`features.json`, `manifest.json`). This is not
+   cosmetic — the plan's literal `Path(features_path).read_text()` **crashes on this
+   machine**: it decodes with the cp1252 locale codec and raises
+   `UnicodeDecodeError: 'charmap' codec can't decode byte 0x81 in position 67636`. 41 fields
+   in the shipped label set carry codepoints outside cp1252, mostly the IAU type strings
+   (`"Lacus, lacūs"`, `"Sinus, sinūs"` — U+016B) and names like `Von Kármán`, `Poincaré`,
+   `Rimae Römer`, `Mons Rümker`. `labels.py` already documents the same trap on the write
+   side. Removing the pin re-breaks `test_every_marker_resolves_in_the_shipped_label_set`,
+   which reads the real file through `proof._by_name`, so the defect cannot come back
+   silently.
 4. **`MIN_SAMPLES` is a named constant** (15) instead of a literal, and `run_proof` returns
    `level`, `mareSamples`, `highlandSamples` and `contrast` in addition to the planned keys,
    because "the counts printed" is the required failure output for requirement 4 and the
