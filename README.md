@@ -1,36 +1,165 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Lunar Map Explorer
 
-## Getting Started
+An interactive, Google-Maps-like view of the Moon in two modes driven by **one tile pyramid and one coordinate frame**: a flat equirectangular "Paper" map and a zoomable/rotatable "Globe". Rendered with CesiumJS alone - `SCENE2D` for paper, `SCENE3D` for globe - served from `public/` by Next.js. Local-first by decision: no tile server, no object storage, no public deploy, no Cesium ion account or asset. Curated IAU place names tier in and out with
+zoom. Every number below is copied from the plan and spec in `docs/superpowers/{plans,specs}/` and their
+`fetch-log.md`, `bake-log.md`, `gate-G1.md`, `gate-G2.md`, `tierA-check-transcript.txt`, `verify-10.md`,
+`verify-16.md` records, plus `public/tiles/manifest.json`.
 
-First, run the development server:
+## Quickstart
 
 ```bash
+npm install                                              # also runs scripts/postinstall_cesium.mjs
+python -m venv .venv && .venv/Scripts/python.exe -m pip install -r scripts/requirements.txt
+npm run fetch    # 3.04 GB of sources into gitignored data/raw, sha256-verified
+npm run bake     # Tier A pyramid, 2 h 58 m measured, into gitignored public/tiles
+npm run labels   # regenerates public/data/features.json
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+A fresh clone has **no imagery**: `.gitignore` excludes `public/tiles/*` except `manifest.json`, and all of
+`data/raw/`, so the bake is mandatory - without it there is nothing to draw, and `npm run proof` stops with
+`SystemExit: no paper tiles at level 5 under public/tiles`. `public/cesium/` is ignored too, which is why the
+postinstall copier matters. The pipeline scripts are spelled `.venv\Scripts\python.exe scripts/foo.py` (backslashes, doubled because this is JSON) because npm runs package scripts through `cmd.exe`, not your Git Bash: a forward-slash venv path fails with "not recognized" before Python starts. From Git Bash itself, `.venv/Scripts/python.exe` remains correct.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Measured pipeline cost
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Measured, not estimated. Windows / Git Bash, Samsung 980 PRO SSD, 15.8 GiB RAM, rasterio 1.5.2 / GDAL 3.12.2,
+Node 24 (`bake-log.md` §1-§4).
 
-## Learn More
+| Role | File | Bytes on disk | Licence recorded in this repo |
+|---|---|---|---|
+| detail | `LRO_WAC_Mosaic_Global_303ppd_v3.jp2` | 2,500,331,610 | none shipped; metadata credits `LROC Team, ASU` |
+| colour | `lroc_color_poles.tif` | 518,090,428 | none shipped; `TIFFTAG_DOCUMENTNAME` = `/svs/data/lunar/lroc/albedo/hapke/lroc_color_poles.tif` |
+| labels | `MOON_nomenclature_center_pts.zip` | 23,845,070 | `Public domain.` (`useconst` in `metadata_nomenclature_points_MOON.xml`) |
 
-To learn more about Next.js, take a look at the following resources:
+Sources total 3,042,272,356 B (with the 5,248 B `.aux.xml` sidecar); re-hashing all of it costs 2.48 s, so `npm run fetch` verifies by digest by default, and the 5,959,263,751 B `.tif` fallback was not downloaded because the `JP2OpenJPEG` driver worked. Only the gazetteer carries a written use constraint: check upstream terms before redistributing derived imagery.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Tier A (`--top 6`, both layers), tiles per level and measured bytes:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Level | 0 | 1 | 2 | 3 | 4 | 5 | 6 | total |
+|---|---|---|---|---|---|---|---|---|
+| tiles / layer | 2 | 8 | 32 | 128 | 512 | 2,048 | 8,192 | 10,922 |
+| paper bytes | 164,203 | 662,536 | 2,516,933 | 9,064,997 | 31,103,905 | 102,435,356 | 326,146,815 | 472,094,745 |
+| photo bytes | 96,309 | 374,036 | 1,459,101 | 5,994,331 | 25,654,549 | 97,605,343 | 324,128,142 | 455,311,811 |
 
-## Deploy on Vercel
+- **21,844 JPEGs, 927,406,556 B = 0.927 GB (0.864 GiB)**, 42,456 B/tile average (paper 43,224, photo 41,688;
+  1.3191 and 1.2722 bits/px).
+- **Wall clock 2 h 58 m 03 s** (`real 178m3.232s`; `timings.bakeSeconds` = 10,680.5 s), 150-200 s per full-width band. The cost is JP2 decoding, not resampling: the source's block geometry is `54,582 x 20,000` (full image height), so every band read decodes the whole 5.96 GPix codestream - an L2 smoke bake cost 38 minutes for 84 tiles.
+- Design spec §3's "1.0-1.8 GB" is superseded by the measurement; `bake.py`'s estimator now carries the measured bits/px and predicts 927,405,788 B, an error of -0.00%.
+- **Tier B (`--top 7`) was NOT run, so the next figures are extrapolations**, not measurements (`bake-log.md` §5, §5.1): `project_seconds(7, both, 1024)` puts it at **6.7-8.4 hours** from the measured 150-200 s/band (§5's looser band: 6-12 h) over 128 bands and **87,380 files**, with the estimator at **3.71 GB = 4.00x the measured Tier A total** and the guard asking **5.56 GB** free. It stays opt-in; `--top 6` is the shipped state.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Grid contract, as measured
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+`512 x 512` px tiles; level `L` has `2^(L+1)` columns x `2^L` rows; **row 0 is north** (`y` increases
+southward, no TMS reversal anywhere); longitude `−180…180`; **planetocentric** latitude `±90`; Moon sphere
+radius **1,737,400 m**, flattening `0.0` - so planetographic and planetocentric coincide and no latitude
+conversion is done. Row 0 = north was measured, not assumed: `tileXYToRectangle(0, 0, 1).north === 90`, headless and in the live page. m/px runs 10,660.55 (L0) → 333.14 (L5) → **166.57 (L6)**, exact `m_per_px(6)` = 166.57113880453207 (`--dry-run` prints 166.6).
+
+The detail source's native grid is **303.2333 px/deg** (109,164 x 54,582) and falls *between* levels: L6 is
+182.04 px/deg, L7 would be 364.09 px/deg. No power-of-two level equals it, because
+`pxPerDeg = 512·2^(L+1)/360` only yields powers of two times 2.8444. **Level 6 at 166.57 m/px is the last
+true downsample; level 7 at 83.3 m/px is a 1.2x upsample of a 100 m/px source.** Stage 0 also gates the
+file's declared pixel size against the canonical one: 303.23337750432864 vs 303.23333333333335, drift `-0.015902 px` inside a 0.1 px tolerance.
+
+## Re-running the gates
+
+```bash
+npm run test    # vitest then pytest
+npm run proof   # Gate G2; reads public/tiles + public/data/features.json
+node scripts/g1_tiling_probe.mjs                        # Gate G1 criteria 3+4, headless
+.venv/Scripts/python.exe scripts/g2_geometry_probe.py   # G2 mis-registration tables
+.venv/Scripts/python.exe scripts/g2_geometry_probe.py --sources   # + source-vs-tile check
+```
+
+The probes print and always exit 0: diagnostics, not tests. `npm run proof` writes `albedoHistogram` and
+`geometryProof` into the tracked `manifest.json`, so it dirties the tree. Measured at this commit
+(`d0557ab`): vitest **195 passed / 15 files**, pytest **168 passed**.
+
+**Gate G1** proves Cesium boots on self-hosted assets and that the geodetic `y` origin is what the bake
+writes: `row0north = 90.000°`, `row1north = 0°`, L1 grid `4 x 2`, L2 `8 x 4`, `tileWidth = 512`, radii
+`1737400 1737400 1737400`, zero off-site requests, no ion 401 - so **no `{reverseY}` and no `--y-flip`
+anywhere**. It says nothing about real imagery, and a per-row `y` error in a real bake is not
+browser-detectable: that is G2's job.
+
+**Gate G2** proves the tile grid and the label coordinates agree, using USGS shapefile geometry as an
+independent check of a NASA raster. Measured on level 5 `paper` (raw albedo DN, no gain): mare median
+**33.5** vs highland median **80.5**, contrast **47.0 DN** against a 25 DN floor; histogram over
+536,870,912 pixels in 2,048 tiles, mean 64.34, p33 47, p67 76; **20/20** mare and **16/16** highland
+markers resolved (floor 15); and the four Apollo 11 traverse features (West 23.4908, 0.6705; Little West
+23.4756, 0.6743; Double 23.4727, 0.6738; Mount Marilyn 40.0000, 1.1300) inside the Mare Tranquillitatis
+bbox (lat `−4.0512…19.3748`, lon `16.924…45.4903`) and reading dark: **28, 28, 28, 57** against p67 = 76.
+The pass is falsifiable, which is the only reason it means anything. Same tiles, lookup deliberately
+mis-registered (`gate-G2.md`):
+
+| registration | mare median | highland median | contrast |
+|---|---|---|---|
+| true | 33.5 | 80.5 | **+47.0 DN** |
+| latitude mirrored (`lat → −lat`, the `y`-flip signature) | 51.5 | 50.0 | **−1.5 DN** |
+| longitude rotated (`lon → lon+180`, the far-side signature) | 76.5 | 60.0 | **−16.5 DN** |
+
+A footprint version over whole bboxes agrees: +33.0 / −7.0 / −15.0 DN. A flipped or rotated map inverts the
+sign instead of merely weakening it. Honest scope: G2's floor is ~333 m (one L5 pixel), so it catches
+whole-tile errors and not sub-pixel offsets; it says nothing about the `photo` layer's chroma transfer; and
+it proves the two datasets *agree*, not that either is independently right. The delivered pyramid separately passed 54/54 region-scale checks (five maria dark, Tycho and Copernicus bright, orientation, antimeridian seam) in `tierA-check-transcript.txt`.
+
+## What the imagery is, and its resolution ceiling
+
+- **LROC WAC morphology mosaic**: global illumination-normalized albedo, 100 m/px (303.233 px/deg), one
+  band - the only source of sharpness.
+- **NASA SVS CGI Moon Kit** `lroc_color_poles.tif`: 27,360 x 13,680 at 76 px/deg (~399 m/px), poles filled.
+  Hue only, through a chromaticity transfer (`chi = B/mean(B)`, detail gain `k = 0.4`) into which the WAC's
+  high frequencies are injected.
+- **IAU Gazetteer of Planetary Nomenclature** (USGS Astrogeology): 9,087 records, curated to the 600 in
+  `public/data/features.json` (tiers 0/1/2/3 = 17/134/368/81; tier 3 = the 81 astronaut-named traverse
+  features).
+
+Plainly: **nothing human-made is visible at any public global resolution** - no lander, no descent stage, no
+tracks - because no such product exists, not because the renderer is soft. The colour is **a chromaticity
+transfer from a 76 px/deg base, not a calibrated mosaic**: hue is smooth and plausible, not spectrally
+quantitative, and real 118 m/px colour (GLD100) was dropped because it stops at `±79°` and would need a
+second shading source. **Craters below roughly a kilometre are blobs** at the default tier: 166.57 m/px
+resolves crater floors of about `≥1 km` and major rilles. Sub-metre imagery exists for **exactly one site**
+(Apollo 17, an official 0.5 m/px orthomosaic), not as a global product, so per-site zoom is a v2 item. There
+is also no live public Moon tile service (USGS WMS dead, `map.lunarmap.org` no DNS, LROC Quick Map
+HTML-only, ArcGIS MoonBMap 404, NASA GIBS Earth-only), which is why this repo bakes its own.
+
+## Attribution
+
+Rendered by the app as `src/lib/cesium/moon.ts`'s exported `CREDIT` (imported, never retyped; the apostrophe
+is U+2019 on purpose):
+
+> NASA/GSFC/Arizona State University (LROC WAC mosaic) · NASA’s Scientific Visualization Studio (CGI Moon Kit) · USGS Astrogeology Science Center · IAU Gazetteer of Planetary Nomenclature
+
+## Known limits and open items
+
+- **Polar albedo hole (upstream, not a bake defect).** 35,454,232 of 536,870,912 level-5 `paper` pixels -
+  **6.60%** - read DN 0, concentrated above `|lat| 73°` (rows 0-2 and 29-31; 68 tiles more than 50% black,
+  all there). Sampling the source confirms it: 13x13 windows at 0°E / `±89.5°` are **100.0%** and **95.9%**
+  exact zeros against 0.0% at the equator. So **in paper mode the poles look punched out** - black fields in
+  a cream sheet, ~10% of each hemisphere's disc - while globe mode loses detail instead of going black,
+  because the colour base fills the poles. Deliberately not muted: a veil lifting black toward cream would
+  fabricate albedo the source does not have.
+- **20 pinned gazetteer geometry defects.** 19 of the 9,087 records have a centre outside their own bbox
+  (18 sub-half-degree precision mismatches plus `Statio Tianhe`'s genuine 90.9° sign error) and `Brill`
+  straddles the `±180` vs `0-360` convention. `scripts/labels.py` ships those with `bbox: null` so nothing
+  downstream trusts them, names the set, and exits nonzero only if it *grows* (`bbox defects: 19 found, 20
+  known, 0 new`) - a guard on our regressions, not a claim that USGS data is perfect. 12 of them are curated
+  tier-3 traverse features, hence the 12 nulls in `features.json`. Legitimate seam-crossing bboxes
+  (`west > east`, 10 curated near-0° features) are not defects, and `bbox_contains` is the only legal
+  containment test.
+- **The paper tint is decor.** Paper mode's warm cast is a CSS `sepia/saturate/contrast/brightness` filter plus a `#efe9dc` base colour: no hypsometric tints, contours, relief shading or elevation layer of any kind.
+- **Not yet verified in a browser.** No visible browser surface existed during implementation
+  (`NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`, viewport `0x0`, `visibilityState=hidden`), so each item below is
+  unit-tested or numerically probed and still needs a real tab:
+  - the **smooth Paper↔Globe morph animation landing on its own**: every recorded toggle finished through
+    the `completeMorph()` fallback (4.0-8.7 s), never via `scene.mode === target`. End state and camera
+    preservation are proven, the transition is not; the deadline was raised to 15 s to make a jump-cut less
+    likely, not to rule one out.
+  - the **three failure panels** of plan Task 15 and spec §4.4 (unbaked tiles/manifest, missing Cesium
+    static assets, no WebGL2) have never been forced in a real tab; the WebGL2 path cannot even be provoked
+    here, and Task 15 was still landing as this file was written.
+  - the **four per-mode screenshots** owed by `verify-16.md` (globe+photo, globe+paper, paper+paper,
+    paper+photo at L2 and L6) do not exist, so no claim is made about how either mode looks.
+  - also owed: label subtlety and overlap in a real view, real mouse-drag behaviour, the `±180` strip and
+    the poles viewed as pixels, and frame rate during drag-rotate (GPU-dependent, reported not asserted).
+- **Open:** Gate G3 (Task 18 sweep) has not been run; the Tier B decision stands as declined.
