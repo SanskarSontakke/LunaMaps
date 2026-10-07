@@ -16,6 +16,14 @@ pixel-corner transform (-180.0, +90.0) with CRS ESRI:104903, so the JP2 reports
 originConvention 'corner' and gridReadFrom 'raster'; the centre branch stays
 under test because the file's own GML box is centre-referenced, and any source
 that hands through that value verbatim must still normalise.
+
+`pxPerDeg` is always the *canonical* grid value, width/360, in both branches,
+and east/south are derived from it. The file's own stated pixel size is kept
+separately as `pxPerDegDeclared` (None for a file with no georeference, which
+states nothing). The detail JP2 declares 0.00329779 deg/px where a 109164 px
+globe needs 360/109164 = 0.00329779048 deg/px; that 4.8038e-10 deg/px rounding
+is 0.016 px of shortfall across the width, which is metadata evidence, not a
+geometry to propagate into the tiling grid.
 """
 from __future__ import annotations
 import rasterio
@@ -27,6 +35,10 @@ MOON_WKT = (
     'UNIT["Degree",0.0174532925199433]]'
 )
 
+# `pxPerDeg` here is the spec table's rounded statement of the grid; the value
+# read_grid_contract reports is the canonical width/360 (109164/360 =
+# 303.23333..., 27360/360 = 76.0), so `tol` only has to absorb the table's own
+# rounding -- not any rounding in the file's metadata.
 EXPECTED_DETAIL = {'width': 109164, 'height': 54582, 'count': 1,
                    'pxPerDeg': 303.233, 'dtype': 'uint8', 'tol': 2e-3}
 EXPECTED_COLOR = {'width': 27360, 'height': 13680, 'count': 4,
@@ -48,18 +60,23 @@ def read_grid_contract(path: str) -> dict:
     with rasterio.open(path) as ds:
         t = ds.transform
         referenced = bool(ds.crs) or (t is not None and not t.is_identity)
+        # The grid is defined by the pixel count over a known global extent, so
+        # one canonical pixel size serves both branches; a source's own rounded
+        # statement about it is recorded, not used for geometry.
+        px_per_deg = ds.width / 360.0
         if referenced:
-            px_per_deg = 1.0 / abs(t.a)
-            west, north, convention = _normalise_origin(t.c, t.f, px_per_deg)
+            declared = 1.0 / abs(t.a)
+            west, north, convention = _normalise_origin(t.c, t.f, declared)
             source = 'raster'
         else:
-            px_per_deg = ds.width / 360.0
+            declared = None
             west, north, convention = -180.0, 90.0, 'assigned'
             source = 'assigned'
         c = {
             'path': path, 'driver': ds.driver, 'width': ds.width,
             'height': ds.height, 'count': ds.count, 'dtype': ds.dtypes[0],
-            'pxPerDeg': px_per_deg, 'west': west, 'north': north,
+            'pxPerDeg': px_per_deg, 'pxPerDegDeclared': declared,
+            'west': west, 'north': north,
             'east': west + ds.width / px_per_deg,
             'south': north - ds.height / px_per_deg,
             'originConvention': convention, 'gridReadFrom': source,
@@ -85,20 +102,16 @@ def assert_contract(actual: dict, expected: dict) -> None:
                 f"({actual['path']})")
     if abs(actual['pxPerDeg'] - expected['pxPerDeg']) > tol:
         raise AssertionError(
-            f"pxPerDeg: got {actual['pxPerDeg']:.6f} expected "
+            f"pxPerDeg: got {actual['pxPerDeg']:.6f} (file declares "
+            f"{actual.get('pxPerDegDeclared')!r}) expected "
             f"{expected['pxPerDeg']:.6f} tol {tol} ({actual['path']})")
-    # east/south are *derived* (west + width/pxPerDeg), so their accuracy is
-    # capped by the pixel size the source declares. The detail JP2 declares
-    # 0.00329779 deg/px where a 109164 px globe needs 360/109164 =
-    # 0.0032977904, and that 4.8e-9 deg/px rounding accumulates to a 5.2e-5 deg
-    # (0.016 px) shortfall across the width. An absolute 1e-6 deg box tolerance
-    # is therefore unreachable for this file and would reject a correct
-    # georeference; the box is instead bounded by a fraction of one pixel,
-    # which a whole pixel of drift still fails by ~20x.
-    box_tol = max(expected.get('boxTol', 1e-6), 0.05 / actual['pxPerDeg'])
+    # east/south are derived from the canonical pixel size (width/360), so they
+    # are exact for a correct global grid no matter how the source rounds its
+    # own deg/px statement -- which is why the box keeps the plain 1e-6 deg gate
+    # and the file's own statement stays diagnostic, in pxPerDegDeclared.
     for key, want in (('west', -180.0), ('north', 90.0),
                       ('east', 180.0), ('south', -90.0)):
-        if abs(actual[key] - want) > box_tol:
+        if abs(actual[key] - want) > 1e-6:
             raise AssertionError(
                 f'{key}: got {actual[key]!r} expected {want!r} '
-                f'(box tol {box_tol:.3e}, {actual["path"]})')
+                f'(box tol 1e-6 deg, {actual["path"]})')
