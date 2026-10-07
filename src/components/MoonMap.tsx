@@ -10,9 +10,11 @@ import {
   type CameraState,
 } from '@/lib/cesium/morph';
 import { attachPicking } from '@/lib/cesium/picking';
+import { measureMPerPx } from '@/lib/cesium/scaleProbe';
 import { attachLabels, type LabelSet } from '@/lib/labels/entities';
 import { layerTop, useManifest } from '@/lib/assets';
 import { fuzzySearch } from '@/lib/search';
+import { attachKeyboard } from '@/lib/keyboard';
 import { cameraHeightForLevel } from '@/lib/grid';
 import {
   DEFAULT_LAYER,
@@ -25,8 +27,10 @@ import {
 } from '@/types';
 import ModeToggle from './ModeToggle';
 import LayerChips from './LayerChips';
-import SearchBox from './SearchBox';
+import SearchBox, { SEARCH_INPUT_ID } from './SearchBox';
 import FeatureCard from './FeatureCard';
+import ScaleReadout, { type ReadoutState } from './ScaleReadout';
+import Attribution from './Attribution';
 
 declare global {
   // Exposed for the browser verification harness only.
@@ -56,6 +60,8 @@ export interface MoonHarness {
   search(query: string): string[];
   selectByName(name: string): boolean;
   selected(): Feature | null;
+  /** The live projected scale, straight from `measureMPerPx` (Task 13 sweep). */
+  scale(): { mPerPx: number | null; canvas: [number, number] };
 }
 
 // Cesium.SceneMode enum values as names (MORPHING=0 … SCENE3D=3), for readable
@@ -79,6 +85,8 @@ export default function MoonMap() {
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const labelsRef = useRef<LabelSet | null>(null);
   const pickedRef = useRef<Feature | null>(null);
+  // The keyboard detach function, so a StrictMode double-mount attaches once.
+  const keyboardRef = useRef<(() => void) | null>(null);
   const { manifest, error } = useManifest();
   const [features, setFeatures] = useState<FeatureCollection | null>(null);
   // A ref mirror of the two pieces of late-arriving state the dev harness needs
@@ -103,6 +111,11 @@ export default function MoonMap() {
   // click while the first is still morphing.
   const requested = useRef<Mode>(DEFAULT_MODE);
   const [modeError, setModeError] = useState<string | null>(null);
+  const [readout, setReadout] = useState<ReadoutState>({
+    mPerPx: null,
+    latDeg: HOME.latDeg,
+    lonDeg: HOME.lonDeg,
+  });
 
   // Card state for both entry points (search result and map click). Kept
   // separate from `pickedRef`, which stays strictly "what the last left-click
@@ -127,6 +140,35 @@ export default function MoonMap() {
     },
     [selectFeature],
   );
+
+  // Scale, measured through the live camera (see src/lib/cesium/scaleProbe.ts).
+  // Only re-render when a *displayed* digit changed: this runs from the
+  // postRender hook, and an unconditional setState at 8 Hz would rebuild the
+  // React tree on every frame of a fly-to.
+  const updateReadout = useCallback((viewer: Cesium.Viewer) => {
+    if (viewer.isDestroyed()) return;
+    const state = getCameraState(viewer);
+    const next: ReadoutState = {
+      mPerPx: measureMPerPx(viewer),
+      latDeg: state.latDeg,
+      lonDeg: state.lonDeg,
+    };
+    setReadout((prev) => {
+      const sameScale =
+        (prev.mPerPx === null) === (next.mPerPx === null) &&
+        (prev.mPerPx === null ||
+          next.mPerPx === null ||
+          Math.round(prev.mPerPx) === Math.round(next.mPerPx));
+      if (
+        sameScale &&
+        prev.latDeg.toFixed(4) === next.latDeg.toFixed(4) &&
+        prev.lonDeg.toFixed(4) === next.lonDeg.toFixed(4)
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, []);
 
   // The viewer is created only after the manifest has loaded and validated,
   // so `top` is real and a broken build fails in the panel below, not in a
@@ -213,6 +255,10 @@ export default function MoonMap() {
           return true;
         },
         selected: () => selectedRef.current,
+        scale: () => ({
+          mPerPx: viewer.isDestroyed() ? null : measureMPerPx(viewer),
+          canvas: [viewer.canvas.clientWidth, viewer.canvas.clientHeight],
+        }),
       };
     }
     return () => {
@@ -295,7 +341,10 @@ export default function MoonMap() {
       const t = Date.now();
       if (t - last < 125) return; // throttle to 8 Hz
       last = t;
-      if (!viewer.isDestroyed()) labels.refresh(getCameraState(viewer).height);
+      if (!viewer.isDestroyed()) {
+        labels.refresh(getCameraState(viewer).height);
+        updateReadout(viewer);
+      }
     };
     viewer.scene.postRender.addEventListener(onPostRender);
     const detachPick = attachPicking(viewer, (f) => {
@@ -316,6 +365,32 @@ export default function MoonMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [features, manifest, selectFeature]);
 
+  // Keyboard navigation, attached to the window (the canvas never holds focus,
+  // and a document-level listener would fight Cesium's own handlers). Keys are
+  // inert while a text field has focus, so typing in the search box moves the
+  // caret, not the camera; `1`/`2` route through the same React state the mode
+  // toggle uses, so a morph is never started twice by two owners.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || keyboardRef.current) return;
+    keyboardRef.current = attachKeyboard(window, viewer, {
+      afterMove: () => {
+        if (viewer.isDestroyed()) return;
+        labelsRef.current?.refresh(getCameraState(viewer).height);
+        // Immediate, so a single keypress is visible even when it lands inside
+        // the 125 ms postRender throttle window of a one-shot move.
+        updateReadout(viewer);
+      },
+      setMode: (m) => setModeState(m),
+      focusSearch: () => document.getElementById(SEARCH_INPUT_ID)?.focus(),
+      close: () => selectFeature(null),
+    });
+    return () => {
+      keyboardRef.current?.();
+      keyboardRef.current = null;
+    };
+  }, [manifest, selectFeature, updateReadout]);
+
   return (
     <>
       <div ref={hostRef} id="cesiumContainer" className="map-host" />
@@ -324,6 +399,7 @@ export default function MoonMap() {
           <ModeToggle mode={mode} onChange={setModeState} />
           <LayerChips layer={layer} onChange={setLayerState} />
           <SearchBox features={features} onChoose={goToFeature} />
+          <ScaleReadout readout={readout} top={topOf(manifest, layer)} />
           {!features && (
             <div className="ctl ctl-note" role="status">
               Place names unavailable — search and labels are off; the map still
@@ -346,6 +422,9 @@ export default function MoonMap() {
           </div>
         </div>
       )}
+      {/* Outside `.ui` on purpose: provenance stays on screen even when the
+          manifest or features.json is missing. */}
+      <Attribution manifest={manifest} />
     </>
   );
 }

@@ -185,3 +185,81 @@ main {
   font-size: 10px;
   opacity: 0.7;
 }
+/* Scale readout (Task 13): bottom-left, out of the way of the chips. */
+.ctl-scale {
+  bottom: 14px;
+  left: 14px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 7px 10px;
+}
+.scale-value {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.scale-bar-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.scale-bar {
+  height: 6px;
+  border: 1px solid rgba(232, 232, 232, 0.8);
+  border-top: none;
+}
+.scale-bar-label,
+.scale-meta {
+  font-size: 10px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+.scale-meta {
+  display: flex;
+  gap: 10px;
+}
+/* Attribution (Task 13): 10 px, always visible, own stacking context. */
+.credit {
+  position: fixed;
+  right: 10px;
+  bottom: 8px;
+  z-index: 2;
+  max-width: 48vw;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(12, 14, 20, 0.62);
+  backdrop-filter: blur(6px);
+  color: rgba(232, 232, 232, 0.78);
+  font: 10px/1.35 system-ui, sans-serif;
+  text-align: right;
+}
+.credit-text {
+  margin: 0;
+}
+.credit-more summary {
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0.8;
+}
+.credit-more ul {
+  margin: 4px 0 0;
+  padding-left: 0;
+  list-style: none;
+  text-align: left;
+}
+.credit-more li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.credit-name {
+  opacity: 0.85;
+}
+.credit-detail {
+  opacity: 0.65;
+  white-space: nowrap;
+}
+.credit-baked {
+  margin: 4px 0 0;
+  opacity: 0.65;
+}
