@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import type { Manifest } from '@/types';
+import type { Manifest, SourceRecord } from '@/types';
 import { MOON_RADIUS_M, TILE_SIZE } from '@/lib/grid';
 
 const EXPECTED_SCHEMA = 1;
@@ -12,21 +12,85 @@ const MAX_TOP = 7;
 const isBakedTop = (v: unknown): v is number =>
   typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_TOP;
 
+type Rec = Record<string, unknown>;
+const isRecord = (v: unknown): v is Rec =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+/** Non-blank string: `generatedAt` and the source filenames are printed as-is. */
+const isText = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
+
+/**
+ * Validate every field the app reads, and return only those fields.
+ *
+ * The previous version checked a handful of keys and then said `return m as
+ * Manifest`, which asserted a type over `levels`, `sources`, `timings` and
+ * `geometryProof` that nothing had verified — `Attribution` renders
+ * `generatedAt` and `manifest.sources[].name` straight to the screen, so an
+ * unchecked value there is a checked-looking lie. There is no cast any more: the
+ * returned object is built field by field out of values that each passed a
+ * predicate, so the type cannot claim more than was checked (the unread bake keys
+ * are no longer in `Manifest` either — see src/types.ts).
+ */
 export function parseManifest(value: unknown): Manifest | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const m = value as Partial<Manifest>;
-  if (m.schema !== EXPECTED_SCHEMA) return null;
-  const grid = m.grid;
-  if (!grid) return null;
-  if (grid.tileSize !== TILE_SIZE) return null;
-  if (grid.yOrigin !== 'north') return null;
-  if (grid.radiusMeters !== MOON_RADIUS_M) return null;
-  if (grid.lonDomain !== '180') return null;
-  if (grid.latitudeType !== 'planetocentric') return null;
-  if (!m.layers) return null;
-  if (!isBakedTop(m.layers.paper?.top)) return null;
-  if (!isBakedTop(m.layers.photo?.top)) return null;
-  return m as Manifest;
+  if (!isRecord(value)) return null;
+  if (value.schema !== EXPECTED_SCHEMA) return null;
+  if (!isText(value.generatedAt)) return null;
+
+  const grid = value.grid;
+  if (!isRecord(grid)) return null;
+  const { tileSize, colsFactor, rowsFactor, yOrigin, lonDomain } = grid;
+  const { latitudeType, radiusMeters, flattening, prjWkt } = grid;
+  if (!isNum(tileSize) || tileSize !== TILE_SIZE) return null;
+  if (!isText(yOrigin) || yOrigin !== 'north') return null;
+  if (!isNum(radiusMeters) || radiusMeters !== MOON_RADIUS_M) return null;
+  if (!isText(lonDomain) || lonDomain !== '180') return null;
+  if (!isText(latitudeType) || latitudeType !== 'planetocentric') return null;
+  if (!isText(colsFactor) || !isText(rowsFactor)) return null;
+  if (!isText(prjWkt)) return null;
+  if (!isNum(flattening)) return null;
+
+  const sources = value.sources;
+  if (!Array.isArray(sources) || sources.length === 0) return null;
+  const checked: SourceRecord[] = [];
+  for (const s of sources) {
+    if (!isRecord(s)) return null;
+    if (!isText(s.name) || !isText(s.role)) return null;
+    if (!isNum(s.bytes) || !isText(s.sha256)) return null;
+    checked.push({
+      name: s.name,
+      role: s.role,
+      bytes: s.bytes,
+      sha256: s.sha256,
+      ...(isText(s.url) ? { url: s.url } : {}),
+      ...(typeof s.reused === 'boolean' ? { reused: s.reused } : {}),
+    });
+  }
+
+  const layers = value.layers;
+  if (!isRecord(layers)) return null;
+  const paper = layers.paper;
+  const photo = layers.photo;
+  if (!isRecord(paper) || !isBakedTop(paper.top)) return null;
+  if (!isRecord(photo) || !isBakedTop(photo.top)) return null;
+
+  return {
+    schema: EXPECTED_SCHEMA,
+    generatedAt: value.generatedAt,
+    grid: {
+      tileSize,
+      colsFactor,
+      rowsFactor,
+      yOrigin: 'north',
+      lonDomain: '180',
+      latitudeType: 'planetocentric',
+      radiusMeters,
+      flattening,
+      prjWkt,
+    },
+    sources: checked,
+    // Only `top` survives: it is the field moon.ts feeds to Cesium.
+    layers: { paper: { top: paper.top }, photo: { top: photo.top } },
+  };
 }
 
 export const layerTop = (m: Manifest, layer: 'paper' | 'photo') =>

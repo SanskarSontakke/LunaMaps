@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as Cesium from 'cesium';
 import {
   MAX_H,
@@ -8,10 +8,12 @@ import {
   MorphIncompleteError,
   clampHeight,
   preserveState,
+  setMode,
   settleMode,
   type CameraState,
 } from '@/lib/cesium/morph';
 import { MAX_H as MOON_MAX_H, MIN_H as MOON_MIN_H } from '@/lib/cesium/moon';
+import type { Mode } from '@/types';
 
 describe('clampHeight', () => {
   it('bounds the camera inside the controller limits', () => {
@@ -148,5 +150,127 @@ describe('settleMode post-morph guard', () => {
     );
     expect(calls.setView).toBe(0);
     expect(calls.render).toBe(0);
+  });
+});
+
+describe('settleMode outcome reporting', () => {
+  it('reports a morph that landed on its own as animated and not forced', () => {
+    const target = Cesium.SceneMode.SCENE2D;
+    const { viewer } = fakeViewer({ mode: target });
+    expect(settleMode(viewer, 'paper', target, snap, { landed: true, forced: false, tornDown: false }))
+      .toEqual({ mode: 'paper', applied: true, animated: true, forced: false });
+  });
+  it('reports a deadline-forced jump-cut as applied but NOT animated', () => {
+    // The scene really is in the target mode (completeMorph put it there), so the
+    // switch succeeded — but nothing animated, and the UI must say so.
+    const target = Cesium.SceneMode.SCENE2D;
+    const { viewer, calls } = fakeViewer({ mode: target });
+    const out = settleMode(viewer, 'paper', target, snap, { landed: false, forced: true, tornDown: false });
+    expect(out).toEqual({ mode: 'paper', applied: true, animated: false, forced: true });
+    expect(calls.setView).toBe(1);
+  });
+  it('reports a wait that ended in teardown as not applied', () => {
+    const target = Cesium.SceneMode.SCENE2D;
+    const { viewer, calls } = fakeViewer({ mode: Cesium.SceneMode.SCENE3D });
+    expect(settleMode(viewer, 'paper', target, snap, { landed: false, forced: false, tornDown: true }))
+      .toEqual({ mode: 'paper', applied: false, animated: false, forced: false });
+    expect(calls.setView).toBe(0);
+  });
+});
+
+/**
+ * A viewer whose scene can be mid-morph, with the two behaviours the deadline
+ * path depends on: morphToX leaves MORPHING (a hidden tab never advances the
+ * tweens) and completeMorph lands wherever the *running* transition was headed —
+ * which is not necessarily the mode we just asked for.
+ */
+function morphableViewer(opts: {
+  start: number;
+  morphLands: boolean;
+  completeTo: number;
+}) {
+  const scene = {
+    mode: opts.start,
+    isDestroyed: () => false,
+    morphTo2D: () => {
+      scene.mode = Cesium.SceneMode.MORPHING;
+      if (opts.morphLands) scene.mode = Cesium.SceneMode.SCENE2D;
+    },
+    morphTo3D: () => {
+      scene.mode = Cesium.SceneMode.MORPHING;
+      if (opts.morphLands) scene.mode = Cesium.SceneMode.SCENE3D;
+    },
+    completeMorph: () => {
+      scene.mode = opts.completeTo;
+    },
+    requestRender: () => {},
+    render: () => {},
+    screenSpaceCameraController: { enableTilt: true },
+  };
+  const viewer = {
+    isDestroyed: () => false,
+    scene,
+    camera: {
+      positionCartographic: { longitude: 0.41, latitude: 0.011, height: 2e5 },
+      heading: 0,
+      pitch: -1.2,
+      setView: () => {},
+    },
+  };
+  return viewer as unknown as Cesium.Viewer;
+}
+
+async function setModeThroughDeadline(viewer: Cesium.Viewer, mode: Mode) {
+  // Capture the outcome synchronously: `setMode` settles while the timers are
+  // being advanced, and a rejection with no handler attached yet would surface as
+  // an unhandled rejection instead of a test result.
+  const run = setMode(viewer, mode).then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  // The pump re-arms a 50 ms timer per poll; run the whole 15 s deadline out.
+  await vi.advanceTimersByTimeAsync(MORPH_DEADLINE_MS + 1_000);
+  return run;
+}
+
+describe('the deadline path is reachable through setMode and reported honestly', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('resolves with a forced (non-animated) outcome when completeMorph lands the mode', async () => {
+    vi.useFakeTimers();
+    // A hidden tab: the pump takes the scene.render() branch, which needs `document`.
+    vi.stubGlobal('document', { visibilityState: 'hidden' });
+    const viewer = morphableViewer({
+      start: Cesium.SceneMode.SCENE3D,
+      morphLands: false,
+      completeTo: Cesium.SceneMode.SCENE2D,
+    });
+    expect(await setModeThroughDeadline(viewer, 'paper')).toEqual({
+      ok: true,
+      value: { mode: 'paper', applied: true, animated: false, forced: true },
+    });
+  });
+
+  it('REJECTS with MorphIncompleteError when even completeMorph leaves the wrong mode', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('document', { visibilityState: 'hidden' });
+    // What this pins is the CONTRACT: a wait that ends with the scene still in the
+    // wrong mode must reject, not resolve as success — the dead error path the
+    // review flagged was dead because the old wait minted success unconditionally.
+    // The fake models a `completeMorph()` that does not land the target (Cesium's
+    // own completion is gated on an installed `_completeMorph`; see
+    // docs/superpowers/specs/verify-10.md for exactly what is proven here and what
+    // is only reasoned from Cesium's source).
+    const viewer = morphableViewer({
+      start: Cesium.SceneMode.MORPHING,
+      morphLands: false,
+      completeTo: Cesium.SceneMode.SCENE3D,
+    });
+    const out = await setModeThroughDeadline(viewer, 'paper');
+    expect(out.ok).toBe(false);
+    expect((out as { error: unknown }).error).toBeInstanceOf(MorphIncompleteError);
   });
 });

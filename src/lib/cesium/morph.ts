@@ -61,9 +61,9 @@ export function preserveState(s: CameraState, mode: Mode): CameraState {
  * the new one* (Cesium 1.146, SceneTransitioner), so the naive version can wait
  * for a mode that never arrives.
  */
-const morphQueue = new WeakMap<Cesium.Viewer, Promise<void>>();
+const morphQueue = new WeakMap<Cesium.Viewer, Promise<ModeChange>>();
 
-export function setMode(viewer: Cesium.Viewer, mode: Mode): Promise<void> {
+export function setMode(viewer: Cesium.Viewer, mode: Mode): Promise<ModeChange> {
   const run = () => doSetMode(viewer, mode);
   const prev = morphQueue.get(viewer);
   const next = prev ? prev.then(run, run) : run();
@@ -71,12 +71,13 @@ export function setMode(viewer: Cesium.Viewer, mode: Mode): Promise<void> {
   return next;
 }
 
-async function doSetMode(viewer: Cesium.Viewer, mode: Mode): Promise<void> {
-  if (viewer.isDestroyed()) return;
+async function doSetMode(viewer: Cesium.Viewer, mode: Mode): Promise<ModeChange> {
+  if (viewer.isDestroyed()) return NOT_APPLIED(mode);
   const scene = viewer.scene;
   const target = mode === 'globe' ? Cesium.SceneMode.SCENE3D : Cesium.SceneMode.SCENE2D;
   const snap = preserveState(getCameraState(viewer), mode);
   if (scene.mode === Cesium.SceneMode.MORPHING) scene.completeMorph();
+  let wait: MorphWait = LANDED;
   if (scene.mode !== target) {
     // The morph methods live on Scene, not Camera (verified against 1.146:
     // Scene.morphTo2D(duration) / morphTo3D(duration) take no completion
@@ -84,19 +85,20 @@ async function doSetMode(viewer: Cesium.Viewer, mode: Mode): Promise<void> {
     // Scene.render).
     if (mode === 'globe') scene.morphTo3D(MORPH_SECONDS);
     else scene.morphTo2D(MORPH_SECONDS);
-    await waitForSceneMode(viewer, target);
+    wait = await waitForSceneMode(viewer, target);
   }
   // waitForSceneMode can resolve on destroy (teardown) or on the fallback
-  // deadline *without* the mode ever landing. settleMode re-checks both before
-  // touching the controller, so a torn-down viewer is left alone and a stalled
-  // morph rejects (and stays retryable) instead of half-applying onto a wrong
-  // scene — the destroy race this guards against.
-  settleMode(viewer, mode, target, snap);
+  // deadline. settleMode re-checks the *live* scene mode before touching the
+  // controller either way, so a torn-down viewer is left alone, a jump-cut is
+  // reported as `forced` instead of as an animated morph, and a morph that even
+  // completeMorph() could not land rejects (and stays retryable) instead of
+  // half-applying onto a wrong scene.
+  return settleMode(viewer, mode, target, snap, wait);
 }
 
 /** Thrown by `settleMode` when the scene did not reach the requested mode.
- *  MoonMap turns the resulting rejection into a visible error and leaves its
- *  committed `applied` mode untouched, so the switch can be retried. */
+ *  MoonMap rolls its mode latch back on rejection, surfaces the failure, and so
+ *  keeps the switch retryable. */
 export class MorphIncompleteError extends Error {
   constructor(mode: Mode) {
     super(`scene never reached ${mode} mode; try again`);
@@ -104,23 +106,63 @@ export class MorphIncompleteError extends Error {
   }
 }
 
+/** What `waitForSceneMode` saw while the transition was running. */
+export interface MorphWait {
+  /** `scene.mode === target` was reached without the deadline fallback. */
+  landed: boolean;
+  /** The deadline fired and `completeMorph()` jump-cut the rest. */
+  forced: boolean;
+  /** The viewer/scene was destroyed while waiting (teardown, not a failure). */
+  tornDown: boolean;
+}
+
+const LANDED: MorphWait = { landed: true, forced: false, tornDown: false };
+
+/** What a mode-change request actually achieved — the honest answer the caller
+ *  (and the UI) has to report. */
+export interface ModeChange {
+  mode: Mode;
+  /** False only when the viewer was destroyed mid-flight: nothing was applied. */
+  applied: boolean;
+  /** The transition was not cut short by the deadline fallback. When the scene
+   *  was already in `mode` no morph ran at all, and both flags are vacuous. */
+  animated: boolean;
+  /** True when `completeMorph()` jump-cut the transition at the deadline. The
+   *  scene IS in `mode`, but the user never saw it animate — Task 18's sweep
+   *  reads this instead of monkey-patching `scene.completeMorph`. */
+  forced: boolean;
+}
+
+const NOT_APPLIED = (mode: Mode): ModeChange => ({
+  mode,
+  applied: false,
+  animated: false,
+  forced: false,
+});
+
 /**
  * The synchronous tail of a mode change, run after the morph has been awaited.
  * Kept free of any DOM/timer dependency so it is unit-testable with a plain
  * fake viewer (the await in `doSetMode` is what needs a real tab).
- *  - viewer/scene destroyed: teardown, not a failed switch — resolve quietly,
- *    apply nothing (there is no scene to retry onto).
- *  - scene.mode !== target: the morph was cut short — throw so the caller can
- *    surface it and keep the switch retryable.
- *  - otherwise: apply tilt + setView + requestRender.
+ *  - tornDown / viewer / scene destroyed: teardown, not a failed switch —
+ *    report `applied: false` and write nothing (there is no scene to retry onto).
+ *  - scene.mode !== target: even the forced completion failed to land the mode
+ *    (Cesium's morphToX called during MORPHING returns without starting the new
+ *    transition), so throw — this is the one case that is genuinely not a
+ *    success, and it is reachable through `setMode` (see morph.test.ts).
+ *  - otherwise: apply tilt + setView + requestRender, reporting `forced` for
+ *    whatever the wait had to jump-cut.
  */
 export function settleMode(
   viewer: Cesium.Viewer,
   mode: Mode,
   target: number,
   snap: CameraState,
-): void {
-  if (viewer.isDestroyed() || viewer.scene.isDestroyed?.()) return;
+  wait: MorphWait = LANDED,
+): ModeChange {
+  if (wait.tornDown || viewer.isDestroyed() || viewer.scene.isDestroyed?.()) {
+    return NOT_APPLIED(mode);
+  }
   if (viewer.scene.mode !== target) throw new MorphIncompleteError(mode);
   const scene = viewer.scene;
   scene.screenSpaceCameraController.enableTilt = mode === 'globe';
@@ -137,6 +179,7 @@ export function settleMode(
     orientation: { heading: snap.heading, pitch: snap.pitch, roll: 0 },
   });
   scene.requestRender();
+  return { mode, applied: true, animated: !wait.forced, forced: wait.forced };
 }
 
 /**
@@ -148,9 +191,14 @@ export function settleMode(
  * synchronous scene.render(wallClock) per poll so the real tween runs instead
  * of just waiting for the timeout fallback; a visible tab lets Cesium's own
  * loop render at display rate after our requestRender().
+ *
+ * It never decides whether the change *succeeded*: it only reports which way it
+ * stopped, and `settleMode` re-reads the live scene mode afterwards. Settling a
+ * starved morph can take the whole `MORPH_DEADLINE_MS` (15 s), so any automated
+ * sweep must allow more than that per toggle.
  */
-function waitForSceneMode(viewer: Cesium.Viewer, target: number): Promise<void> {
-  return new Promise<void>((resolve) => {
+function waitForSceneMode(viewer: Cesium.Viewer, target: number): Promise<MorphWait> {
+  return new Promise<MorphWait>((resolve) => {
     const scene = viewer.scene;
     // Cesium's morph is two sequential tweens (camera, then morphTime). The
     // deadline is deliberately generous (see MORPH_DEADLINE_MS) so a stalled
@@ -159,12 +207,19 @@ function waitForSceneMode(viewer: Cesium.Viewer, target: number): Promise<void> 
     // starved (a hidden tab), where this pump ticks at the 1 s timer clamp.
     const deadline = Date.now() + MORPH_DEADLINE_MS;
     const pump = () => {
-      if (viewer.isDestroyed() || scene.isDestroyed?.()) return resolve();
-      if (scene.mode === target) return resolve();
+      if (viewer.isDestroyed() || scene.isDestroyed?.()) {
+        return resolve({ landed: false, forced: false, tornDown: true });
+      }
+      if (scene.mode === target) {
+        return resolve({ landed: true, forced: false, tornDown: false });
+      }
       if (Date.now() > deadline) {
+        // Force the transition to finish. If that does NOT land the target mode
+        // we do not pretend otherwise: `settleMode` re-reads scene.mode and
+        // rejects, and MoonMap rolls its latch back so the click can be retried.
         scene.completeMorph();
         scene.requestRender();
-        return resolve();
+        return resolve({ landed: false, forced: true, tornDown: false });
       }
       if (document.visibilityState === 'visible') {
         scene.requestRender();

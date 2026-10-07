@@ -12,6 +12,11 @@ import type { Manifest } from '@/types';
  * It lives outside the `.ui` overlay and outside the manifest conditional on
  * purpose: the attribution must survive a failed bake, a missing manifest and a
  * lost `features.json`.
+ *
+ * `manifest.generatedAt` and `manifest.sources[].name` are printed here verbatim,
+ * so they are validated by `parseManifest` (src/lib/assets.ts) before a manifest
+ * is ever handed to this component: the panel renders checked strings, not fields
+ * a cast merely asserted.
  */
 export default function Attribution({ manifest }: { manifest: Manifest | null }) {
   const content = attributionContent(manifest);

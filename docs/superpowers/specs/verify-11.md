@@ -69,6 +69,13 @@ The table below is the prior session's transcript, taken through
 re-measure any of it (browser work belongs to Task 18), so treat these as **unconfirmed
 inputs to that sweep**, not as evidence of passing.
 
+**Development-only caveat (Task 18 must read this before re-measuring).** Those
+`__moonViewer` / `__moonHarness` globals are gated to `process.env.NODE_ENV ===
+'development'` (see `src/components/MoonMap.tsx` and `verify-10.md`), so they are
+`undefined` in a production bundle. A sweep that starts the app with `npm run start` finds
+no harness at all and will look like a label failure. Re-measuring MUST use `npm run dev --
+-p 3110`.
+
 | height (m) | visible tiers | shown entities | labels | dots |
 |---|---|---|---|---|
 | 2.2e7 | [0, 3] | 84 | 3 | 81 |
@@ -144,7 +151,9 @@ the ~462 km nadir window holds no traverse site and only 3 named features.
 3. Zoom in past ~4.15e6 m: craters (tier 1) appear; past 1 038 640 m: rimae/catenae
    (tier 2). Recheck the two thresholds at a real viewport height rather than 900 px.
 4. Click a label → `__moonHarness.picked()` returns its feature (closes Task 12's first
-   requirement); the feature card shows it.
+   requirement); the feature card shows it. `__moonHarness` only exists under
+   `npm run dev` (`NODE_ENV=development`) — on a built `npm run start` it is `undefined`, so
+   this step and every other harness read below require the dev server.
 5. Paper↔Globe round trip: the visible name set must not thrash.
 6. Screenshots at 2.2e7 / 3.5e6 / 4e5 m, and `viewer.entities.values.filter(e => e.show).length`
    re-measured in the same breath, replacing the unconfirmed table above.

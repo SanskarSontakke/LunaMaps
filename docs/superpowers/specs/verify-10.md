@@ -64,11 +64,81 @@ this in-app browser the page is *hidden* (`visibilityState: hidden`), Chrome sus
 rAF loop and throttles its timers, so every toggle here completed via the fallback
 (elapsed 4.0–8.7 s per morph, measured before the deadline raise). The **final state is
 what the table above proves**; the smooth animated transition can only be judged in a
-visible tab — see "OWED to Task 18" below. After the await, `settleMode()` now re-checks
-that the viewer is alive and the scene actually reached the target before writing the
-controller/setView, and a morph that never lands rejects so the UI surfaces it and can
-retry (this fixes the destroy-race and silent-divergence findings; it does not observe the
-animation).
+visible tab — see "OWED to Task 18" below.
+
+### How a morph that did not animate is now reported (fix round 2, replaces an overclaim)
+
+Round 1's text here said "a morph that never lands rejects so the UI surfaces it and can
+retry". **That was an overclaim and is corrected.** As round 1 shipped, the rejection was
+dead code: `waitForSceneMode` resolved either on destroy, on `scene.mode === target`, or
+on the deadline — and the deadline branch called `completeMorph()` *first*, which puts the
+scene in the target mode, so `settleMode` always found the target and the promise resolved
+as plain success. A stalled morph therefore jump-cut and the UI reported an animated
+change. Round 2 fixes the reporting and the retry path:
+
+- `waitForSceneMode` no longer decides success; it returns **how it stopped**
+  (`{ landed, forced, tornDown }`).
+- `settleMode` re-reads the live scene mode and returns a `ModeChange`:
+  `{ mode, applied, animated, forced }`.
+  - jump-cut at the deadline → `{ applied: true, animated: false, forced: true }`. The mode
+    really changed, so this is **not** an error; `MoonMap` shows a `role="status"` line —
+    "Paper view is showing; the transition could not animate (no render frames), so it was
+    completed instantly." Plain "success" is no longer claimed for a forced jump-cut.
+  - the scene is verifiably *not* in the target mode even after the deadline's
+    `completeMorph()` → `MorphIncompleteError` and `applied` never advances. This is
+    option (b) of the review's F2: the stall is reported as `forced` (a status, not
+    success), and the throw is kept only for a scene that genuinely never arrived.
+    Two unit tests drive the real deadline pump with fake timers
+    (`src/test/morph.test.ts` → "the deadline path is reachable through setMode and
+    reported honestly"),
+    one for the forced-but-applied outcome and one for the reject; run against
+    round 1's `morph.ts` they fail (4 of 18), so they pin behaviour and not a mock.
+    **Exactly how much of this is proven, and how much is not:**
+    - *Proven by unit test:* `setMode` no longer converts a non-arrival into
+      success. When the wait ends with the scene still out of the target mode it
+      rejects instead of resolving — which is what made round 1's throw
+      unreachable: the old wait always handed `settleMode` a scene that had already
+      been forced into place.
+    - *Reasoned from Cesium 1.146's source, never observed in a browser:* for the
+      scene to still be wrong after the deadline, `scene.completeMorph()` has to
+      fail to land it. `Scene.prototype.completeMorph` delegates to
+      `SceneTransitioner.prototype.completeMorph`, which calls `_completeMorph`
+      **only if it is defined** (`Build/CesiumUnminified/Cesium.js:252858`, and
+      `Scene4.prototype.completeMorph` at `:266825`), and `_completeMorph` is
+      installed by `createMorphHandler` only when `scene.completeMorphOnUserInput`
+      is true (`:253079-253089`, default `true` at `:263726`; this app never sets
+      it). With the flag off, `completeMorph()` is a permanent no-op and
+      `SceneTransitioner.prototype.morphTo2D` then takes its early-return branch
+      whenever the mode is still `MORPHING` (`:252863-252872`), so a frame-starved
+      tab can never leave `MORPHING` — that is the configuration in which the
+      reject fires. With the default configuration the completion callback assigns
+      `scene._mode` directly (`complete2DCallback` `:253676`, `complete3DCallback`
+      `:253644`), so a starved morph lands and reads back `forced: true`.
+    - *Therefore, for Task 18:* in the shipped configuration a **reject is a bug
+      report, not expected hidden-tab behaviour** — a hidden tab should show the
+      `forced` status line. Do not "confirm" the reject path by flipping
+      `completeMorphOnUserInput` and calling it verified; that only proves the
+      unit-tested branch, and the animation itself still needs the visible-tab run
+      below.
+- On rejection (and on a viewer destroyed mid-morph) the mode latch
+  (`src/lib/cesium/modeLatch.ts`) **rolls `requested` back to `applied`**, and the
+  toggle is driven by the mode the scene was confirmed in — not by the last click.
+  Round 1 left `requested` stranded on the failed mode, which deduped every later
+  request for it: after one rejection neither Paper nor Globe could change the scene
+  again until reload, while the toggle still showed the unreachable mode. The
+  orchestration itself is no longer inline in the component: the effect calls
+  `attemptMode`, so `src/test/modeLatch.test.ts` (10 tests) drives the production
+  claim-await-commit/roll-back path directly, including the finding's proof — after
+  a rejection the **next identical click dispatches a second morph** (the test
+  asserts the morph was actually called with `['paper','globe','globe']`), while a
+  click on the mode the scene is confirmed in stays a genuine no-op.
+
+**Timeout note for the Task 18 sweep:** a frame-starved (hidden) tab only settles a morph
+when `MORPH_DEADLINE_MS` fires, so **a single toggle can take up to ~15 s** (the raised
+deadline; round 1's was 4 s). Any automated sweep must use a per-step timeout strictly
+greater than 15 000 ms — 20 s or more per toggle — or it will report a false failure on
+morphs that are merely settling via the fallback. In a *visible* tab the morph lands on its
+own in ~1 s and the deadline is never reached.
 
 ### Layer switching
 
@@ -135,20 +205,32 @@ non-landing loud; none of them OBSERVE the animation):
 - `MORPH_DEADLINE_MS` (src/lib/cesium/morph.ts) raised from `2 × duration + 3 s = 4 s` to
   `max(15 s, (2·0.5 + 12) s) = 15 s`, so a normal ~1 s morph with a stalled first frame is
   never jump-cut in a visible tab; the `completeMorph()` fallback now only fires when the
-  render loop is genuinely starved (a hidden tab).
-- `settleMode()` throws `MorphIncompleteError` when the scene did not reach the target, and
-  `MoonMap` advances its committed mode only on success, so a failed switch surfaces in the
-  alert panel and stays retryable instead of silently diverging.
+  render loop is genuinely starved (a hidden tab). Cost: a starved toggle can now take up
+  to ~15 s to settle — see the timeout note above.
+- `setMode` resolves a `ModeChange`, so a jump-cut is reported as `forced: true` (and shown
+  as a status) instead of as plain success, and `settleMode` only throws when the scene is
+  verifiably not in the requested mode even after the forced completion. The wait can no
+  longer mint a success, so the throw is no longer dead code sitting behind a resolved
+  promise — see the reachability breakdown above for what *is* unit-proven and what is only
+  reasoned from Cesium's source.
+- `MoonMap` routes every mode request through `attemptMode` (src/lib/cesium/modeLatch.ts),
+  which rolls the latch back on rejection *and* on a mid-morph teardown, and the toggle
+  renders the mode the scene was confirmed in — so a failed switch is honest *and*
+  retryable (round 1's stranded `requested` ref blocked every later mode change until
+  reload).
 
 Exact steps for a human in a VISIBLE browser tab:
 1. Start the dev server: `npm run dev -- -p 3110` and open http://localhost:3110/ in a
    normal FOREGROUND window (not hidden / not headless). The harness globals are gated to
    `process.env.NODE_ENV === 'development'`, so this must be `dev`, not a built `start`.
+   Allow up to 20 s per toggle before calling it a failure (see the timeout note above).
 2. Paste the console snippet below, then click Paper and Globe by hand and WATCH the
    transition — it should animate over roughly a second, not snap.
-3. Proof requires `usedFallback=false` and `landedOnItsOwn=true` on every toggle. If
-   `usedFallback` is ever `true` in a *visible* tab, the morph did not land on its own and
-   the jump-cut fired — that is exactly the still-open finding, so report it, do not sign off.
+3. Proof requires `usedFallback=false`, `landedOnItsOwn=true` and `forced=false` on every
+   toggle. If `forced` is ever `true` in a *visible* tab, the morph did not land on its own
+   and the jump-cut fired — that is exactly the still-open finding, so report it, do not
+   sign off. (`forced`/`animated` come from the resolved `ModeChange`; the
+   `completeMorph` monkey-patch is kept as an independent cross-check of the same fact.)
 
 Console snippet (devtools of the visible tab):
 
@@ -161,21 +243,42 @@ s.completeMorph = function (...a) { usedFallback = true; return origComplete(...
 for (const m of ['paper', 'globe', 'paper', 'globe']) {
   usedFallback = false;
   const t0 = performance.now();
-  await __moonHarness.setMode(m).then(() => s.mode === (m === 'paper' ? 2 : 3));
-  const ok = s.mode === (m === 'paper' ? 2 : 3);
-  console.log(`morph ${m}: end=${NAMES[s.mode]} ms=${Math.round(performance.now() - t0)} usedFallback=${usedFallback} landedOnItsOwn=${ok && !usedFallback}`);
+  // setMode resolves a ModeChange: { mode, applied, animated, forced }.
+  const out = await __moonHarness.setMode(m);
+  const ok = out.applied && s.mode === (m === 'paper' ? 2 : 3);
+  console.log(`morph ${m}: end=${NAMES[s.mode]} ms=${Math.round(performance.now() - t0)} ` +
+    `usedFallback=${usedFallback} landedOnItsOwn=${ok && !out.forced} forced=${out.forced} ` +
+    `applied=${out.applied}`);
 }
 ```
 Expected in a visible tab: `end=SCENE2D`/`SCENE3D`, `usedFallback=false` throughout,
-`landedOnItsOwn=true`, `ms` a little above ~1000 ms (the 0.5 s morph is two tweens plus
-frame scheduling), and a visibly smooth animation.
+`forced=false`, `landedOnItsOwn=true`, `ms` a little above ~1000 ms (the 0.5 s morph is two
+tweens plus frame scheduling), and a visibly smooth animation. In a *hidden* tab expect
+`forced=true` with the status line in the UI — that is the honest reporting, not a pass.
 
 ## Steps for the controller (close the visual check)
 
 1. Open http://localhost:3110/ (server: `npm run dev -- -p 3110`; stop the PID you started
    afterwards) in a **visible** window and click Paper: the morph should animate in ~0.5 s
    and the map should be axis-aligned (north up, no tilt). Click Globe: tilt returns.
+   Allow **more than 15 s per toggle** before calling it a failure — a frame-starved tab
+   only settles at `MORPH_DEADLINE_MS` (see the timeout note above).
 2. At the L5 home view over Mare Tranquillitatis, screenshot both modes.
 3. Click Albedo ↔ Colour relief: the imagery should swap between greyscale albedo and
    colour relief with no double-layer ghosting.
 4. Drag the map between toggles once, to confirm preservation with real input.
+5. Read the two outcomes apart — they mean different things and the retry rule differs:
+   - `forced=true` (the `role="status"` line): the mode **did** change, only the animation
+     was jump-cut. The toggle must show that mode, and clicking it again is a **no-op by
+     design** (the scene is already there) — that is not the round-1 bug. Reaching the
+     *other* mode must still work.
+   - the `role="alert"` panel (a rejection): the scene never left its previous mode. The
+     toggle must have fallen back to the mode the scene really holds, and clicking the
+     **same** mode again must dispatch a fresh morph and reach it (round 1 could not — the
+     latch was stranded on the failed mode, which deduped every later request until reload).
+   Check both against the live scene:
+   `document.querySelector('.ctl-mode .on')?.textContent` must be `'Paper'` exactly when
+   `__moonHarness.sceneMode()` is `'SCENE2D'`, and `'Globe'` exactly when it is `'SCENE3D'`
+   — the selected button reports the mode the scene is actually in, never the last click.
+   (`sceneMode()` returns Cesium's mode name, so it is never literally equal to the button
+   label; the pair above is the check.)

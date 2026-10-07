@@ -8,7 +8,9 @@ import {
   setLayer,
   setMode,
   type CameraState,
+  type ModeChange,
 } from '@/lib/cesium/morph';
+import { attemptMode, createModeLatch } from '@/lib/cesium/modeLatch';
 import { attachPicking } from '@/lib/cesium/picking';
 import { measureMPerPx } from '@/lib/cesium/scaleProbe';
 import { attachLabels, type LabelSet } from '@/lib/labels/entities';
@@ -42,7 +44,8 @@ declare global {
 export interface MoonHarness {
   camera(): CameraState | null;
   sceneMode(): string;
-  setMode(mode: Mode): Promise<void>;
+  /** Resolves with how the morph actually finished (`forced` = jump-cut). */
+  setMode(mode: Mode): Promise<ModeChange>;
   setLayer(layer: LayerName): void;
   setCamera(
     lonDeg: number,
@@ -80,6 +83,16 @@ const homeHeight = () => cameraHeightForLevel(5, 900, 60);
 const topOf = (manifest: Manifest, layer: LayerName) =>
   layer === 'probe' ? 1 : layerTop(manifest, layer);
 
+/**
+ * Shown when the morph had to be jump-cut at the deadline. The mode DID change,
+ * so this is a status and not an error — but the animation the user asked for
+ * never ran (a frame-starved tab), and reporting plain success would claim an
+ * animation that did not happen.
+ */
+const forcedNotice = (mode: Mode) =>
+  `${mode === 'paper' ? 'Paper' : 'Globe'} view is showing; the transition could ` +
+  'not animate (no render frames), so it was completed instantly.';
+
 export default function MoonMap() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
@@ -97,20 +110,29 @@ export default function MoonMap() {
   const [selected, setSelectedFeature] = useState<Feature | null>(null);
   const [mode, setModeState] = useState<Mode>(DEFAULT_MODE);
   const [layer, setLayerState] = useState<LayerName>(DEFAULT_LAYER);
-  // What the live viewer was built with and has since been *confirmed* at: the
-  // layer effect dedupes on `applied.layer` (setLayer is synchronous), and the
-  // mode effect advances `applied.mode` only after a morph resolves, so a failed
-  // switch never leaves `applied` claiming a mode the scene is not showing. A
-  // `didMount`-style flag is eaten by the renders that happen *before* the
-  // manifest (and viewer) exist, which swallows the user's first toggle.
-  const applied = useRef({ mode: DEFAULT_MODE, layer: DEFAULT_LAYER });
-  // The last mode we *asked* the live viewer to morph to. The morph is async
-  // and the queue serialises requests, so a fast Paper/Globe double-click must
-  // enqueue both (the second one wins). Dedupe on this intent ref, not on
-  // `applied` (which now advances only on success) — that would drop the second
-  // click while the first is still morphing.
-  const requested = useRef<Mode>(DEFAULT_MODE);
+  // What the live viewer was built with and has since been *confirmed* at for
+  // the layer (`setLayer` is synchronous, so the layer effect dedupes on it
+  // directly). The mode half of that idea now lives in `modeLatch`.
+  const appliedLayer = useRef<LayerName>(DEFAULT_LAYER);
+  // The mode the scene has been CONFIRMED to be in, mirrored into state so the
+  // toggle can render the truth. `mode` is what the user asked for; this is what
+  // the map actually shows. Round 1 rendered `mode`, so a rejected morph left the
+  // toggle claiming a mode the scene never reached.
+  const [sceneMode, setSceneMode] = useState<Mode>(DEFAULT_MODE);
+  // The mode-request state machine: `applied` (confirmed) + `requested` (the
+  // morph currently in flight). The morph is async and `setMode`'s queue
+  // serialises requests, so a fast Paper/Globe double-click must enqueue both
+  // (the second one wins) — hence a separate intent ref rather than gating on
+  // `applied` alone. Crucially, a rejection ROLLS IT BACK (see the effect below):
+  // a `requested` left stranded on the failed mode dedupes every later request
+  // for it, which is how round 1 made the map un-switchable until reload.
+  const modeLatch = useRef(createModeLatch(DEFAULT_MODE));
+  // Bumped by every mode request so the effect re-runs even when `mode` did not
+  // change — i.e. the retry click after a failure, which React would otherwise
+  // swallow as a no-op state write. The latch is what still dedupes real no-ops.
+  const [modeNonce, setModeNonce] = useState(0);
   const [modeError, setModeError] = useState<string | null>(null);
+  const [modeNotice, setModeNotice] = useState<string | null>(null);
   const [readout, setReadout] = useState<ReadoutState>({
     mPerPx: null,
     latDeg: HOME.latDeg,
@@ -140,6 +162,15 @@ export default function MoonMap() {
     },
     [selectFeature],
   );
+
+  // One owner for every mode request: the toggle click, the 1/2 keys, and any
+  // future URL restore. It sets the intent AND bumps the nonce, so a click on the
+  // mode the scene is already holding (a retry after a failed morph) still reaches
+  // the effect instead of being a no-op state write.
+  const requestModeChange = useCallback((next: Mode) => {
+    setModeState(next);
+    setModeNonce((n) => n + 1);
+  }, []);
 
   // Scale, measured through the live camera (see src/lib/cesium/scaleProbe.ts).
   // Only re-render when a *displayed* digit changed: this runs from the
@@ -182,8 +213,9 @@ export default function MoonMap() {
       top: topOf(manifest, layer),
       mode,
     });
-    applied.current = { mode, layer };
-    requested.current = mode;
+    appliedLayer.current = layer;
+    modeLatch.current = createModeLatch(mode);
+    setSceneMode(mode);
     viewer.camera.setView({
       destination: Cesium.Cartesian3.fromDegrees(
         HOME.lonDeg,
@@ -272,34 +304,50 @@ export default function MoonMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manifest]);
 
-  // Apply user changes after the viewer exists; the first render of each
-  // effect matches `applied`/`requested` and is a no-op, so the viewer is never
-  // morphed while it is being built. A failed morph no longer silently advances
-  // `applied` (the old bug): it stays at the last mode the scene actually
-  // reached, so toggling back is a real retry, and the rejection is surfaced.
+  // Apply user changes after the viewer exists. The first run of this effect
+  // matches the latch and is a no-op, so the viewer is never morphed while it is
+  // being built. `modeNonce` is in the deps so a *repeat* click — the retry after
+  // a rejection, where `mode` is already the clicked value — re-runs the attempt;
+  // the latch inside `attemptMode` is what still refuses to enqueue a duplicate
+  // morph. All the decision-making (claim → await → commit or roll back) lives in
+  // `attemptMode`, which `src/test/modeLatch.test.ts` drives directly; this effect
+  // only renders its result.
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
-    if (applied.current.mode === mode || requested.current === mode) return;
-    requested.current = mode;
-    setMode(viewer, mode)
-      .then(() => {
-        applied.current.mode = mode;
-        setModeError(null);
-      })
-      .catch((e: unknown) => {
-        // The morph never landed (stalled frames) — do NOT advance `applied`.
-        // Surfacing beats the old `void setMode(...)` swallow + console log.
-        setModeError(
-          e instanceof Error ? `View mode change failed: ${e.message}` : 'View mode change failed',
-        );
-      });
-  }, [mode]);
+    void attemptMode(modeLatch.current, mode, (m) => setMode(viewer, m)).then((out) => {
+      switch (out.status) {
+        case 'noop':
+          return;
+        case 'torn-down':
+          // Teardown (unmount): no scene to report on, and the next viewer build
+          // re-creates the latch. Neither an error nor a false success.
+          return;
+        case 'committed':
+          setSceneMode(out.mode);
+          setModeError(null);
+          // A jump-cut at the deadline is NOT an animated morph: say so, while
+          // still confirming the mode did change.
+          setModeNotice(out.forced ? forcedNotice(out.mode) : null);
+          return;
+        case 'failed':
+          // The morph never landed. `attemptMode` already rolled the latch back to
+          // the mode the scene really holds — otherwise `requested` stays on the
+          // failed mode and every later request for it is deduped until reload —
+          // and `reached` is what the toggle now shows, so it never claims a mode
+          // the scene did not reach.
+          setSceneMode(out.reached);
+          setModeNotice(null);
+          setModeError(`View mode change failed: ${out.message}`);
+          return;
+      }
+    });
+  }, [mode, modeNonce]);
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !manifest) return;
-    if (applied.current.layer === layer) return;
-    applied.current.layer = layer;
+    if (appliedLayer.current === layer) return;
+    appliedLayer.current = layer;
     setLayer(viewer, layer, topOf(manifest, layer));
   }, [layer, manifest]);
 
@@ -368,8 +416,8 @@ export default function MoonMap() {
   // Keyboard navigation, attached to the window (the canvas never holds focus,
   // and a document-level listener would fight Cesium's own handlers). Keys are
   // inert while a text field has focus, so typing in the search box moves the
-  // caret, not the camera; `1`/`2` route through the same React state the mode
-  // toggle uses, so a morph is never started twice by two owners.
+  // caret, not the camera; `1`/`2` route through the same request handler the
+  // mode toggle uses, so a morph is never started twice by two owners.
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || keyboardRef.current) return;
@@ -381,7 +429,7 @@ export default function MoonMap() {
         // the 125 ms postRender throttle window of a one-shot move.
         updateReadout(viewer);
       },
-      setMode: (m) => setModeState(m),
+      setMode: (m) => requestModeChange(m),
       focusSearch: () => document.getElementById(SEARCH_INPUT_ID)?.focus(),
       close: () => selectFeature(null),
     });
@@ -389,14 +437,17 @@ export default function MoonMap() {
       keyboardRef.current?.();
       keyboardRef.current = null;
     };
-  }, [manifest, selectFeature, updateReadout]);
+  }, [manifest, requestModeChange, selectFeature, updateReadout]);
 
   return (
     <>
       <div ref={hostRef} id="cesiumContainer" className="map-host" />
       {manifest && !error && (
         <div className="ui">
-          <ModeToggle mode={mode} onChange={setModeState} />
+          {/* The toggle reports the mode the SCENE is in, not the one last
+              clicked: a morph that fails must not leave 'Globe' looking selected
+              while the map is still on paper. */}
+          <ModeToggle mode={sceneMode} onChange={requestModeChange} />
           <LayerChips layer={layer} onChange={setLayerState} />
           <SearchBox features={features} onChoose={goToFeature} />
           <ScaleReadout readout={readout} top={topOf(manifest, layer)} />
@@ -404,6 +455,14 @@ export default function MoonMap() {
             <div className="ctl ctl-note" role="status">
               Place names unavailable — search and labels are off; the map still
               works.
+            </div>
+          )}
+          {modeNotice && (
+            // Not an alert: the mode DID change. This says the transition was
+            // jump-cut rather than animated, so the panel never reports a smooth
+            // morph that the page could not render.
+            <div className="ctl ctl-note" role="status" aria-live="polite">
+              {modeNotice}
             </div>
           )}
           {modeError && (

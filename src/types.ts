@@ -38,8 +38,25 @@ export interface SourceRecord {
   reused?: boolean;
 }
 
+/**
+ * The frontend's contract with the baked `manifest.json`. Every field modelled
+ * here is verified by `parseManifest` (src/lib/assets.ts) before the value
+ * reaches a component, so no consumer can read an asserted-but-unchecked field.
+ *
+ * The bake writes more keys — `levels`, `timings`, `geometryProof`,
+ * `albedoHistogram`, `labels`, and per-layer `tiles` / `bytes` / `quality` /
+ * `photometric` / `detailGain`. This build never reads them, so they are
+ * deliberately NOT modelled (an `as Manifest` cast over them would have been a
+ * promise nobody checked). A consumer that starts reading one must add the field
+ * to this type AND to the validator, in the same change.
+ */
 export interface Manifest {
   schema: number;
+  /**
+   * The bake's stamp, printed verbatim by the attribution panel. `parseManifest`
+   * guarantees a non-blank string and nothing more — the panel shows whatever
+   * format `scripts/manifest.py` writes, so no date format is asserted here.
+   */
   generatedAt: string;
   grid: {
     tileSize: number;
@@ -52,28 +69,14 @@ export interface Manifest {
     flattening: number;
     prjWkt: string;
   };
-  levels: { L: number; cols: number; rows: number; mPerPx: number }[];
   sources: SourceRecord[];
-  layers: Record<string, {
-    top: number;
-    tiles: number;
-    bytes: number;
-    quality: number;
-    photometric: string;
-    detailGain: number | null;
-  }>;
-  albedoHistogram?: {
-    level: number; mean: number; p33: number; p67: number; samples: number;
-  };
-  labels?: {
-    total: number; curated: number; min_crater_km: number; budget: number;
-    by_tier: Record<string, number>; by_code: Record<string, number>;
-  };
-  geometryProof?: {
-    passed: boolean; mareMedian: number; highlandMedian: number;
-    checks: Record<string, string>; failures: string[];
-  };
-  timings: Record<string, number>;
+  /**
+   * Exactly the two layers this build renders, each with only `top` — the one
+   * field the renderer reads (as Cesium's maximumLevel). Not a `Record<string,
+   * …>`: an indexable type would claim that *any* layer name resolves to a
+   * validated `{ top }`, which is a promise the validator does not make.
+   */
+  layers: { paper: { top: number }; photo: { top: number } };
 }
 
 export const DEFAULT_MODE: Mode = 'globe';
