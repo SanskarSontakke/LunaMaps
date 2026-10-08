@@ -352,6 +352,23 @@ export default function MoonMap() {
     }
   }, []);
 
+  // The handler above, reached through a ref that every render refreshes.
+  //
+  // WHY IT IS A REF AND NOT A DEPENDENCY: `applyModeAttempt` is a function, and a
+  // function inside `useEffect`'s second argument makes the dependency array's
+  // LENGTH the thing that varies between module versions (2 before the harness
+  // shared it, 3 after) — and React's dev invariant on exactly that ("The final
+  // argument passed to useEffect changed size between renders. Previous: [globe,
+  // 0]  Incoming: [globe, 0, (out)=>…]") is a THROW, not a warning. The error
+  // boundary then replaces the whole page with "Application error" and no viewer
+  // is ever built, so the map, the labels, the search and `__moonHarness` all
+  // vanish together. Reading the latest handler off a ref keeps the array the
+  // fixed two-value literal `[mode, modeNonce]`, which is what `src/test/
+  // effectDeps.test.ts` now pins statically: no dependency array in this file may
+  // hold a function expression, and every one has a fixed literal length.
+  const applyModeAttemptRef = useRef(applyModeAttempt);
+  applyModeAttemptRef.current = applyModeAttempt;
+
   // Scale, measured through the live camera (see src/lib/cesium/scaleProbe.ts).
   // Only re-render when a *displayed* digit changed: this runs from the
   // postRender hook, and an unconditional setState at 8 Hz would rebuild the
@@ -538,8 +555,9 @@ export default function MoonMap() {
         setMode: (m: Mode) => setMode(viewer, m),
         // The real path, for sweeps that have to observe what a click does. The
         // latch is claimed here exactly as the mode effect claims it, and the
-        // outcome is rendered by the same `applyModeAttempt`, so the toggle, the
-        // tint and the `role="alert"` panel move as they do for a human.
+        // outcome is rendered through the same `applyModeAttemptRef` the mode
+        // effect uses, so the toggle, the tint and the `role="alert"` panel move
+        // as they do for a human.
         // Setting `mode` afterwards is what the effect would have done anyway,
         // and it cannot double-morph: the latch now confirms the scene is already
         // in that mode, so the effect's `attemptMode` returns `noop`.
@@ -550,7 +568,7 @@ export default function MoonMap() {
           const out = await attemptMode(modeLatch.current, m, (mm) =>
             setMode(viewer, mm),
           );
-          applyModeAttempt(out);
+          applyModeAttemptRef.current(out);
           if (out.status !== 'noop') {
             setModeState(out.status === 'committed' ? out.mode : out.reached);
           }
@@ -642,13 +660,17 @@ export default function MoonMap() {
   // morph. All the decision-making (claim → await → commit or roll back) lives in
   // `attemptMode`, which `src/test/modeLatch.test.ts` drives directly; this effect
   // only renders its result.
+  //
+  // DEPS: a fixed two-value literal, never the handler (see `applyModeAttemptRef`)
+  // and never a computed/conditional array — a dependency array whose length can
+  // differ between renders takes the whole page down.
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
     void attemptMode(modeLatch.current, mode, (m) => setMode(viewer, m)).then(
-      applyModeAttempt,
+      (out) => applyModeAttemptRef.current(out),
     );
-  }, [mode, modeNonce, applyModeAttempt]);
+  }, [mode, modeNonce]);
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !manifest) return;
