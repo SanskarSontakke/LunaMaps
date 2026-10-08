@@ -28,6 +28,37 @@ request without downloading the file** — no 77 GB, no tile server.
 512 = 7,680 tiles, so **both caps ≈ 15,360 tiles ≈ 0.6 GB, and ten 6° site boxes ≈ 720
 tiles**. Call it under an hour, not six.
 
+## 0b. §0 corrected itself — measured 2026-10-08, before any of it was spent
+
+Both §0 "corrections" were read off a filename rather than a header, and streaming the
+headers disproves them. Every row below is a live probe of the remote file, not a catalog
+page.
+
+| claim | measured |
+|---|---|
+| `Lunar_LO_UVVISv2_Hybrid_Mosaic_Global_59m.tif` is global **colour** | **one band**, `ColorInterp.gray`, uint8, 184320 x 92160 = exactly the file's 16,988,406,549 bytes, so it is **uncompressed**, strip-organised (`tiled=False`, block 184320 x 1) with **no overviews** |
+| `Lunar_LO_MR_Mosaic_Global_59m.tif` is the monochrome sibling, same size | true, and that is *why* the two sizes matched: identical geometry, both single-band |
+| 514 px/deg | **512 px/deg** exactly (59.225 m/px), CRS `SimpleCylindrical Moon` on R = 1,737,400 — properly georeferenced, unlike the colour file we hold |
+| the three 1 m/px polar COGs are in "the same bucket" | **all three 404** on `asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/`, which is a file proxy that cannot be listed. The names came from elsewhere and were never probed |
+
+Consequences, in order of how much they cost:
+
+1. **A 59 m/px global *colour* source does not exist here.** The claim that "L8 stops being
+   interpolation and becomes real data" was about colour, and it is false: our only global
+   colour is still 76 px/deg (400 m/px). Above L6 the `photo` layer's *relief* is real
+   (WAC, 100 m/px) and its *hue* is interpolated. That is a limitation to state in the app,
+   not a bake to run.
+2. **The 17 GB LO download is off the critical path.** It buys 512 px/deg of monochrome
+   1966 film. Its illumination is not normalized, and §2 item 4 bans mixing two shaded
+   sources, so it cannot feed `paper` without breaking Gate G2's albedo proof, and it
+   cannot feed `photo` chroma because it has none.
+3. **L8 and the COG prototype both wait on §0b item A** — a real, reachable 1 m/px polar
+   source. Until one answers a HEAD request, region-limited L8 would be baking
+   interpolation into 15,360 tiles and calling it detail.
+
+What is *not* affected: L7 (83.3 m/px) is within reach of the WAC mosaic we already hold
+and verified, so `npm run bake -- --top 7` was started on 2026-10-08 from held sources.
+
 ## 1. Approved decisions
 
 | # | Decision |

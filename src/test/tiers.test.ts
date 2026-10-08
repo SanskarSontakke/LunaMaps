@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { TIER_FROM_LEVEL, tierPriority, visibleTiers } from '@/lib/labels/tiers';
 import { cameraHeightForLevel } from '@/lib/grid';
@@ -22,6 +23,22 @@ describe('visibleTiers', () => {
   });
   it('never loses a tier at the closest zoom', () => {
     expect(visibleTiers(2_000, 900, 60)).toEqual([0, 1, 2, 3]);
+  });
+  it('answers at the viewport it is given, not the one it assumes', () => {
+    // The 116-vs-93 label gap in verify-11.md was this: the same height on a
+    // 786 px canvas has a lower tier-2 gate than on the assumed 900 px one, so
+    // the shorter view drops a whole tier. Neither number was wrong; the
+    // assumption was.
+    expect(visibleTiers(1.0e6, 900, 60)).toEqual([0, 1, 2, 3]);
+    expect(visibleTiers(1.0e6, 786, 60)).toEqual([0, 1, 3]);
+  });
+  it('is called with the live canvas, not the default', () => {
+    // Static assertion, because `attachLabels` needs a WebGL scene to run. The
+    // defect this guards against is invisible from the module under test: the
+    // parameters exist and are correct, and the caller left them out.
+    const src = readFileSync('src/lib/labels/entities.ts', 'utf8');
+    expect(src).toMatch(/visibleTiers\(\s*heightM,\s*hgt \|\| 900,\s*fovDeg\s*\)/);
+    expect(src).not.toMatch(/visibleTiers\(\s*heightM\s*\)/);
   });
   it('keeps the documented level mapping', () => {
     expect(TIER_FROM_LEVEL).toEqual({ 0: null, 1: 1, 2: 3, 3: null });

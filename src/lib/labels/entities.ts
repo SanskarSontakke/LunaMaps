@@ -83,14 +83,27 @@ export function attachLabels(viewer: Cesium.Viewer, fc: FeatureCollection): Labe
   return {
     refresh(heightM: number) {
       const scene = viewer.scene;
-      const tiers = new Set(visibleTiers(heightM));
+      const w = scene.canvas.clientWidth;
+      const hgt = scene.canvas.clientHeight;
+      // The tier gates are heights at which a tile level's ground resolution
+      // matches the *screen*, so they have to be evaluated against the canvas
+      // that is actually on screen. Called bare they assumed 900 px, which is
+      // what `verify-11.md` measured 116 labels against while a live 786 px tab
+      // showed 93. A zero-height canvas (detached, or a hidden tab mid-boot)
+      // would drive every threshold to 0 and silently drop tiers 1 and 2, so the
+      // fall-back keeps the documented assumption rather than inventing a worse
+      // answer.
+      const frustum = scene.camera.frustum;
+      const fovDeg =
+        frustum instanceof Cesium.PerspectiveFrustum
+          ? Cesium.Math.toDegrees(frustum.fov ?? Math.PI / 3)
+          : 60;
+      const tiers = new Set(visibleTiers(heightM, hgt || 900, fovDeg));
       const now = viewer.clock.currentTime;
       const camPos = scene.camera.positionWC;
       // In 3D, the far side of the moon must not label through it
       // (disableDepthTestDistance is infinity, so nothing else stops it).
       const horizonTest = scene.mode === Cesium.SceneMode.SCENE3D;
-      const w = scene.canvas.clientWidth;
-      const hgt = scene.canvas.clientHeight;
       const candidates: { entity: Cesium.Entity; index: number }[] = [];
       const boxes: LabelBox[] = [];
       entries.forEach(({ entity, feature }, i) => {
