@@ -113,3 +113,39 @@ Gate G3: **passing on every measurable claim, incomplete on every visual claim.*
 application runs, paints the baked Moon at the resolution it claims, keeps its geometry
 and labels consistent with the two gates, talks to no third-party service, and switches
 between Paper and Globe. It has never been looked at with human eyes.
+
+## 7. Visual pass, 2026-10-08 — the "no screenshots" gap is closed
+
+A real Chrome window was available this time, so `take_screenshot` worked. Three images,
+all read by eye before these claims were written:
+
+- `work/g3-globe-22000km.png` — home view at 22,000 km
+- `work/g3-globe-hemisphere.png` — 3,000 km over 15°E 5°S, 117 labels shown
+- `work/g3-paper-flat.png` — flat `SCENE2D`, Albedo layer, 2,600 km, 144 labels shown
+
+**Confirmed working visually:** the Moon is recognisable and correctly oriented (Oceanus
+Procellarum on the western limb, Crisium at the eastern edge, Tycho's ray system fanning
+south of the centre); craters, mare boundaries and mascon swirls are legible at 4,400 m/px;
+the flat mode is a true equirectangular sheet with no visible seam; the toggle, layer
+chips, search box, scale bar, compass, coordinate line, `L1 of L6` level readout and the
+attribution block all render.
+
+**Five defects that only eyes could catch:**
+
+1. **The colour layer is not visibly colour.** With `Colour relief` active the globe is
+   neutral grey. The chroma transfer from the 76 px/deg SVS base is producing almost no
+   saturation, so decision D2's photographic-globe half is not landing. `k` is doing
+   detail work, not hue work.
+2. **The paper tint is imperceptible.** `sepia(0.22) saturate(0.55) contrast(0.94)
+   brightness(1.08)` over an albedo map reads as plain grey, not as paper. The cream
+   `#efe9dc` sheet is never seen because the 2D map fills the viewport, so the one colour
+   cue that does work is hidden behind the imagery.
+3. **The default framing is wrong.** At 22,000 km the disc is ~110 px across in a
+   564 × 786 canvas — most of the screen is black. `DEFAULT_VIEW.height = 2.2e7` was chosen
+   analytically and never looked at.
+4. **The landing-site dots are the loudest thing on screen.** Bright yellow with a dark
+   halo, they dominate the subtle grey names the brief asked for.
+5. **The compass rose is clipped under the top control bar** in flat mode.
+
+None of these is a geometry or data fault — Gates G1/G2 still hold. All five are styling
+and framing, and all five are cheap.
