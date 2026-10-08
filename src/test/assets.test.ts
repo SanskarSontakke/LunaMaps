@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { MAX_TOP_LEVEL } from '@/lib/grid';
 import { describe, expect, it, vi } from 'vitest';
 import { layerTop, parseManifest, probeAssets } from '@/lib/assets';
 
@@ -108,9 +109,11 @@ describe('parseManifest', () => {
       }),
     ).toBeNull();
   });
-  it('rejects a top outside 0..7', () => {
+  // 11, not 8: the grid cap moved to L10 with the deep-zoom source, so the
+  // out-of-range probe has to move with it or the test proves nothing.
+  it('rejects a top outside 0..MAX_TOP_LEVEL', () => {
     expect(
-      parseManifest({ ...GOOD, layers: { paper: { top: 8 }, photo: { top: 6 } } }),
+      parseManifest({ ...GOOD, layers: { paper: { top: 11 }, photo: { top: 6 } } }),
     ).toBeNull();
     expect(
       parseManifest({ ...GOOD, layers: { paper: { top: -1 }, photo: { top: 6 } } }),
@@ -118,16 +121,19 @@ describe('parseManifest', () => {
   });
   it('validates BOTH layers, not just paper', () => {
     expect(
-      parseManifest({ ...GOOD, layers: { paper: { top: 6 }, photo: { top: 8 } } }),
+      parseManifest({ ...GOOD, layers: { paper: { top: 6 }, photo: { top: 11 } } }),
     ).toBeNull();
     expect(
       parseManifest({ ...GOOD, layers: { paper: { top: 6 }, photo: {} } }),
     ).toBeNull();
   });
-  it('accepts the ends of the valid top range (0 and 7)', () => {
+  it('accepts the ends of the valid top range (0 and the cap)', () => {
     expect(
-      parseManifest({ ...GOOD, layers: { paper: { top: 0 }, photo: { top: 7 } } }),
+      parseManifest({ ...GOOD, layers: { paper: { top: 0 }, photo: { top: MAX_TOP_LEVEL } } }),
     ).not.toBeNull();
+    expect(
+      parseManifest({ ...GOOD, layers: { paper: { top: 0 }, photo: { top: MAX_TOP_LEVEL + 1 } } }),
+    ).toBeNull();
   });
 
   // The two fields the review called out as asserted-but-unchecked: `generatedAt`

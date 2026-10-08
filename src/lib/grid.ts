@@ -2,13 +2,13 @@ export const TILE_SIZE = 512;
 export const MOON_RADIUS_M = 1_737_400;
 /**
  * The deepest level the grid defines and the delivered pyramids can span: levels
- * 0..7. It is `scripts/grid.py`'s `MAX_TOP_LEVEL`, and the one number `assets.ts`
+ * 0..10. It is `scripts/grid.py`'s `MAX_TOP_LEVEL`, and the one number `assets.ts`
  * uses to refuse a `layers.<name>.top` that Cesium would turn into requests for
  * tiles no bake ever wrote. `src/test/grid.test.ts` pins it to
  * `test-vectors/grid.json` (generated from the Python module) so the two mirrors
  * cannot drift apart silently.
  */
-export const MAX_TOP_LEVEL = 7;
+export const MAX_TOP_LEVEL = 10;
 export const DEG2RAD = Math.PI / 180;
 const ARC_METRES_PER_DEGREE = MOON_RADIUS_M * DEG2RAD;
 

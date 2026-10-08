@@ -313,7 +313,7 @@ def test_manifest_lists_exactly_the_levels_the_pyramid_has(sources, tmp_path):
     # The whole grid table (L0..L7) is still available to a caller that wants
     # it; it is simply no longer the default claim of a manifest.
     full = manifest.base_manifest(range(grid.MAX_TOP_LEVEL + 1))
-    assert [lv['L'] for lv in full['levels']] == list(range(8))
+    assert [lv['L'] for lv in full['levels']] == list(range(grid.MAX_TOP_LEVEL + 1))
 
 
 def test_manifest_bakes_and_derives_are_counted_separately(sources, tmp_path):

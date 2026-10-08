@@ -619,7 +619,7 @@ def test_the_shipped_manifest_is_lf_only_with_a_trailing_newline():
 # keeps accepting it", proved not asserted. Mirrors assets.ts lines 6-93.
 APP_TILE_SIZE = 512
 APP_MOON_RADIUS_M = 1_737_400
-APP_MAX_TOP = 7
+APP_MAX_TOP = 10
 
 
 def _app_is_num(v):
@@ -706,13 +706,18 @@ def test_the_shipped_manifest_satisfies_every_field_the_app_validates():
     assert re.match(r'^\d{4}-\d{2}-\d{2}', m['generatedAt'])
 
 
-def test_parse_manifest_refuses_a_top_of_8_or_a_moved_grid():
-    """The transcription must actually discriminate: an L8 top (a level the app
-    would then request from Cesium but that was never baked) or a south y-origin
-    must return None, exactly as assets.ts rejects them."""
+def test_parse_manifest_refuses_a_top_past_the_cap_or_a_moved_grid():
+    """The transcription must actually discriminate: a top past the grid cap (a
+    level the app would then request from Cesium but that no bake ever wrote) or a
+    south y-origin must return None, exactly as assets.ts rejects them.
+
+    The probe is `MAX_TOP_LEVEL + 1` rather than a literal, because a hard-coded
+    8 passed straight through when the cap moved to 10 -- the test was not wrong,
+    it was silently not testing the boundary any more.
+    """
     good = json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8'))
     bad_top = json.loads(json.dumps(good))
-    bad_top['layers']['paper']['top'] = 8
+    bad_top['layers']['paper']['top'] = grid.MAX_TOP_LEVEL + 1
     assert parse_manifest_app(bad_top) is None
     south = json.loads(json.dumps(good))
     south['grid']['yOrigin'] = 'south'

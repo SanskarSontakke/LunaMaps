@@ -15,7 +15,7 @@ LON_LAT = [
 
 def main():
     bounds = []
-    for L in range(8):
+    for L in range(grid.MAX_TOP_LEVEL + 1):
         for x, y in [(0, 0), (0, grid.level_rows(L) - 1),
                      (grid.level_cols(L) - 1, 0),
                      (grid.level_cols(L) - 1, grid.level_rows(L) - 1)]:
@@ -24,10 +24,10 @@ def main():
     index = [{'lon': lon, 'lat': lat, 'L': L,
               'x': grid.lon_to_tile_x(lon, L),
               'y': grid.lat_to_tile_y(lat, L)}
-             for L in range(8) for (lon, lat) in LON_LAT]
+             for L in range(grid.MAX_TOP_LEVEL + 1) for (lon, lat) in LON_LAT]
     Path('test-vectors').mkdir(exist_ok=True)
     out = {'tileSize': grid.TILE, 'moonRadiusM': grid.MOON_RADIUS_M,
-           'mPerPx': {str(L): grid.m_per_px(L) for L in range(8)},
+           'mPerPx': {str(L): grid.m_per_px(L) for L in range(grid.MAX_TOP_LEVEL + 1)},
            'bounds': bounds, 'index': index}
     p = Path('test-vectors/grid.json')
     p.write_text(json.dumps(out, indent=1))

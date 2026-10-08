@@ -10,7 +10,12 @@ import math
 
 TILE = 512
 MOON_RADIUS_M = 1_737_400.0
-MAX_TOP_LEVEL = 7
+# The deepest level the grid defines. It is a statement about the *sources*, not
+# about the maths: Kaguya TC ortho is 4096 px/deg (7.4 m/px) global, so L10
+# (10.4 m/px) is measured ground and L11 (5.2) would be interpolation. Raising
+# this number does not bake anything -- `bake.py` still takes `--top`, and the
+# disk guard still refuses a plan it cannot pay for.
+MAX_TOP_LEVEL = 10
 DEG2RAD = math.pi / 180.0
 ARC_METRES_PER_DEGREE = MOON_RADIUS_M * DEG2RAD  # 30_322.4 m
 

@@ -29,7 +29,7 @@ describe('single-source constants', () => {
     const levels = Object.keys(vecs.mPerPx).map(Number);
     expect(Math.max(...levels)).toBe(MAX_TOP_LEVEL);
     expect(levels.length).toBe(MAX_TOP_LEVEL + 1);
-    expect(MAX_TOP_LEVEL).toBe(7);
+    expect(MAX_TOP_LEVEL).toBe(10);
   });
   it('the Cesium module and the grid module hold the same radius and tile size', () => {
     expect(CESIUM_MOON_RADIUS_M).toBe(MOON_RADIUS_M);

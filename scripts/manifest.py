@@ -86,3 +86,49 @@ def write_manifest(path, data: dict) -> Path:
     # checkout, but always give it a single trailing LF to normalise from.
     p.write_bytes((json.dumps(data, indent=1) + '\n').encode('utf-8'))
     return p
+
+
+def validate_availability(avail, top) -> list[str]:
+    """Errors in a `layers.<name>.availability` block; empty means it is sound.
+
+    Availability is the answer to "which tiles exist when a layer's deep levels
+    cover only a few rectangles". It is trusted by the app to decide what Cesium
+    may request, so a range that names a tile outside the level's grid would turn
+    into a 404 on every frame, and a level above `top` would be a level no bake
+    could have written. Both are rejected here rather than discovered live.
+
+    Shape: {"<level>": [[x0, x1, y0, y1], ...]} with inclusive bounds, x growing
+    east and y growing south (row 0 is north), the same reading `grid.py` gives.
+    """
+    if not isinstance(avail, dict):
+        return ['availability must be an object keyed by level']
+    errs = []
+    if not isinstance(top, int) or isinstance(top, bool) or top < 0:
+        return [f'layers.top must be a non-negative int, got {top!r}']
+    for level, ranges in avail.items():
+        try:
+            L = int(level)
+        except (TypeError, ValueError):
+            errs.append(f'level key {level!r} is not a number')
+            continue
+        if str(L) != str(level):
+            errs.append(f'level key {level!r} must be its own canonical int')
+        if not 0 <= L <= min(top, grid.MAX_TOP_LEVEL):
+            errs.append(f'availability names L{L} above the layer top {top}')
+            continue
+        if not isinstance(ranges, list) or not ranges:
+            errs.append(f'L{L}: availability must be a non-empty list of ranges')
+            continue
+        cols, rows = grid.level_cols(L), grid.level_rows(L)
+        for i, r in enumerate(ranges):
+            if not isinstance(r, list) or len(r) != 4 \
+                    or not all(isinstance(v, int) and not isinstance(v, bool)
+                               for v in r):
+                errs.append(f'L{L}[{i}]: expected [x0,x1,y0,y1] ints, got {r!r}')
+                continue
+            x0, x1, y0, y1 = r
+            if x0 > x1 or y0 > y1:
+                errs.append(f'L{L}[{i}]: {r} has an inverted bound')
+            elif not (0 <= x0 and x1 <= cols - 1 and 0 <= y0 and y1 <= rows - 1):
+                errs.append(f'L{L}[{i}]: {r} outside the {cols}x{rows} grid')
+    return errs

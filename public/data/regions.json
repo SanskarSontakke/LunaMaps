@@ -1,0 +1,497 @@
+{
+ "schema": 1,
+ "grid": {
+  "tileSize": 512,
+  "yOrigin": "north",
+  "latitudeType": "planetocentric",
+  "radiusMeters": 1737400.0
+ },
+ "regions": [
+  {
+   "id": "apollo-11",
+   "name": "Apollo 11",
+   "kind": "landing-site",
+   "mission": "Apollo 11",
+   "centre": [
+    23.483,
+    0.674
+   ],
+   "sizeDeg": 0.5,
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "gazetteer-median",
+   "crossCheck": [
+    23.4832,
+    0.67405
+   ]
+  },
+  {
+   "id": "apollo-12",
+   "name": "Apollo 12",
+   "kind": "landing-site",
+   "mission": "Apollo 12",
+   "centre": [
+    -23.43,
+    -3.02
+   ],
+   "sizeDeg": 0.5,
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "gazetteer-median",
+   "crossCheck": [
+    -23.430000000000007,
+    -3.02
+   ]
+  },
+  {
+   "id": "apollo-14",
+   "name": "Apollo 14",
+   "kind": "landing-site",
+   "mission": "Apollo 14",
+   "centre": [
+    -17.45,
+    -3.64
+   ],
+   "sizeDeg": 0.5,
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "gazetteer-median",
+   "crossCheck": [
+    -17.44999999999999,
+    -3.64
+   ]
+  },
+  {
+   "id": "apollo-15",
+   "name": "Apollo 15",
+   "kind": "landing-site",
+   "mission": "Apollo 15",
+   "centre": [
+    3.638,
+    26.049
+   ],
+   "sizeDeg": 0.5,
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "gazetteer-median",
+   "crossCheck": [
+    3.6383,
+    26.0488
+   ]
+  },
+  {
+   "id": "apollo-16",
+   "name": "Apollo 16",
+   "kind": "landing-site",
+   "mission": "Apollo 16",
+   "centre": [
+    15.481,
+    -8.976
+   ],
+   "sizeDeg": 0.5,
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "gazetteer-median",
+   "crossCheck": [
+    15.481,
+    -8.9764
+   ],
+   "note": "Gazetteer centre is lon +15.48; NASA landing tables give the Descartes site at 15.4 deg W. The region follows the gazetteer because that is where the app draws the Apollo 16 names. Unresolved upstream question, not a typo to \"fix\" here."
+  },
+  {
+   "id": "apollo-17",
+   "name": "Apollo 17",
+   "kind": "landing-site",
+   "mission": "Apollo 17",
+   "centre": [
+    30.732,
+    20.185
+   ],
+   "sizeDeg": 0.5,
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "gazetteer-median",
+   "crossCheck": [
+    30.732400000000002,
+    20.185100000000002
+   ]
+  },
+  {
+   "id": "tycho",
+   "name": "Tycho",
+   "kind": "feature",
+   "box": [
+    -13.147899999999993,
+    -44.702200000000005,
+    -9.282800000000009,
+    -41.8894
+   ],
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "bbox",
+   "diameterKm": 85.29377
+  },
+  {
+   "id": "copernicus",
+   "name": "Copernicus",
+   "kind": "feature",
+   "box": [
+    -21.681899999999985,
+    8.0394,
+    -18.46859999999998,
+    11.2079
+   ],
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "bbox",
+   "diameterKm": 96.069916
+  },
+  {
+   "id": "aristarchus",
+   "name": "Aristarchus",
+   "kind": "feature",
+   "box": [
+    -48.740099999999984,
+    22.4799,
+    -46.240099999999984,
+    24.9799
+   ],
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "bbox",
+   "diameterKm": 39.994484
+  },
+  {
+   "id": "rima-hadley",
+   "name": "Rima Hadley",
+   "kind": "feature",
+   "box": [
+    1.4191000000000003,
+    24.11745,
+    4.4191,
+    27.11745
+   ],
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "bbox",
+   "diameterKm": 116.08555
+  },
+  {
+   "id": "mons-rumker",
+   "name": "Mons Rümker",
+   "kind": "feature",
+   "box": [
+    -60.25934999999998,
+    38.623450000000005,
+    -56.25934999999998,
+    42.623450000000005
+   ],
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "bbox",
+   "diameterKm": 73.24858
+  },
+  {
+   "id": "mare-orientale",
+   "name": "Mare Orientale",
+   "kind": "feature",
+   "box": [
+    -99.6703,
+    -24.8655,
+    -89.6703,
+    -14.8655
+   ],
+   "minLevel": 8,
+   "maxLevel": 10,
+   "source": "kaguya-tc",
+   "derivedFrom": "centre+size",
+   "diameterKm": 294.15512
+  },
+  {
+   "id": "south-polar-cap",
+   "name": "South pole",
+   "kind": "polar-cap",
+   "box": [
+    -180.0,
+    -90.0,
+    180.0,
+    -84.0
+   ],
+   "minLevel": 8,
+   "maxLevel": 9,
+   "source": "nac-spole",
+   "derivedFrom": "declared"
+  }
+ ],
+ "availability": {
+  "8": [
+   [
+    170,
+    175,
+    67,
+    73
+   ],
+   [
+    258,
+    262,
+    89,
+    93
+   ],
+   [
+    260,
+    261,
+    90,
+    91
+   ],
+   [
+    186,
+    190,
+    92,
+    96
+   ],
+   [
+    299,
+    300,
+    98,
+    99
+   ],
+   [
+    225,
+    229,
+    112,
+    116
+   ],
+   [
+    289,
+    289,
+    126,
+    127
+   ],
+   [
+    222,
+    223,
+    131,
+    132
+   ],
+   [
+    230,
+    231,
+    132,
+    133
+   ],
+   [
+    277,
+    278,
+    140,
+    141
+   ],
+   [
+    114,
+    128,
+    149,
+    163
+   ],
+   [
+    237,
+    242,
+    187,
+    191
+   ],
+   [
+    0,
+    511,
+    247,
+    255
+   ]
+  ],
+  "9": [
+   [
+    340,
+    351,
+    134,
+    146
+   ],
+   [
+    516,
+    524,
+    178,
+    187
+   ],
+   [
+    521,
+    523,
+    181,
+    182
+   ],
+   [
+    373,
+    380,
+    184,
+    192
+   ],
+   [
+    598,
+    600,
+    197,
+    199
+   ],
+   [
+    450,
+    459,
+    224,
+    233
+   ],
+   [
+    578,
+    579,
+    253,
+    254
+   ],
+   [
+    444,
+    446,
+    263,
+    265
+   ],
+   [
+    461,
+    463,
+    265,
+    267
+   ],
+   [
+    555,
+    556,
+    280,
+    282
+   ],
+   [
+    228,
+    256,
+    298,
+    326
+   ],
+   [
+    474,
+    485,
+    375,
+    383
+   ],
+   [
+    0,
+    1023,
+    494,
+    511
+   ]
+  ],
+  "10": [
+   [
+    681,
+    703,
+    269,
+    292
+   ],
+   [
+    1032,
+    1049,
+    357,
+    374
+   ],
+   [
+    1043,
+    1046,
+    362,
+    365
+   ],
+   [
+    746,
+    760,
+    369,
+    384
+   ],
+   [
+    1197,
+    1200,
+    395,
+    398
+   ],
+   [
+    900,
+    918,
+    448,
+    466
+   ],
+   [
+    1156,
+    1159,
+    506,
+    509
+   ],
+   [
+    889,
+    892,
+    527,
+    530
+   ],
+   [
+    923,
+    926,
+    531,
+    534
+   ],
+   [
+    1110,
+    1113,
+    561,
+    564
+   ],
+   [
+    456,
+    513,
+    596,
+    653
+   ],
+   [
+    949,
+    971,
+    750,
+    766
+   ]
+  ]
+ },
+ "cost": {
+  "tiles": 30172,
+  "perRegion": {
+   "apollo-11": 22,
+   "apollo-12": 29,
+   "apollo-14": 29,
+   "apollo-15": 26,
+   "apollo-16": 26,
+   "apollo-17": 29,
+   "tycho": 529,
+   "copernicus": 486,
+   "aristarchus": 337,
+   "rima-hadley": 439,
+   "mons-rumker": 750,
+   "mare-orientale": 4430,
+   "south-polar-cap": 23040
+  },
+  "tilesPerLevel": {
+   "8": 5002,
+   "9": 19842,
+   "10": 5328
+  },
+  "note": "availability is the PLAN. What the app may request is derived from the tiles actually on disk, the same way manifest.baked_levels asks the filesystem."
+ }
+}
