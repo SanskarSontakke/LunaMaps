@@ -146,3 +146,41 @@ Fixed 2026-10-08, with the before/after numbers in `gate-G3-live.md` §8:
    measured 93; the declutter cell size assumes a 900 px viewport that is never read from
    the canvas. The new default framing puts every tier on screen at once, so this one is
    now more exposed, not less.
+
+## 6. Source inventory, every row probed on 2026-10-08
+
+A bucket listing I dismissed as impossible is possible: `asc-pds-services` answers
+`?list-type=2` when the prefix is given **from the bucket root**
+(`prefix=mosaic/Lunar_safed/...`). My earlier `prefix=Lunar_LO` on the `/mosaic/` key path
+returned `NoSuchKey` and I concluded the host could not be listed. That conclusion was
+wrong, and it is what made the polar files look like a fabrication: they were one directory
+deeper. `§0b`'s "a file proxy that cannot be listed" is hereby corrected.
+
+| source | bytes | bands | COG | px/deg | m/px | what it is good for |
+|---|---|---|---|---|---|---|
+| `wms_basemaps3/Moon/Kaguya_TCortho_Mosaic_Global_4096ppd_cog.tif` | 78,252,302,973 | 1 uint8 | **yes**: tiled 512, jpeg, 9 ovr | 4096.09 | **7.4** | global, equirectangular on `GCS_Moon` R=1,737,400 with bounds exactly (-180,-90,180,90) — **our grid contract, no reprojection**. Shaded orthophoto, so it may not mix with WAC albedo |
+| `mosaic/Lunar_safed/LMAP/SouthPolar/LRO_LROC_NAC_SPOLE-90_Mosaic_1m_controlled_cog.tif` | 77,174,580,438 | 1 uint8 | yes: tiled 512, **deflate**, 10 ovr | 1011.7 (1.0 m/px) | 1.0 | PolarStereographic -90, extent 182,107 m, lat >= -84.0. Needs reprojection into the equirect grid |
+| `.../SouthPolar/NAC_SPOLE_mosaic_1m_cog.tif` | 42,596,230,725 | 1 uint8 | yes, deflate, 10 ovr | 1.0 m/px | 1.0 | *Orthographic* -90, lat >= -85.5 |
+| `.../SouthPolar/ShadowCam_SPOLE-90_Mosaic_1m_cog.tif` | 19,887,940,203 | 1 uint8 | yes, deflate, 10 ovr | 1.0 m/px | 1.0 | Polar Stereographic IAU 30135; permanently-shaded-region imagery (a 256 window read back mean 3.7 DN) |
+| `.../SouthPolar/ldem_87s_5mpp_cog.tif` (+ `_hillshade_`) | 4,200,862,545 | 1 float32 | yes, 8 ovr | 5.0 m/px | 5.0 | stereo DEM south of -87, plus its hillshade |
+| `wms_basemaps3/Moon/LRO_WAC_Mosaic_Global_303ppd_v3_cog.tif` | 859,483,513 | 1 | yes, jpeg | 303.23 | 100 | the albedo source we already hold as a 2.5 GB JP2, in 859 MB of COG |
+| `wms_basemaps3/Moon/LRO_LOLA_ClrShade_Global_256ppd_v06_cog.tif` | 847,198,547 | **3 RGB** | yes | 256 | 118.4 | colourised shaded relief. D7's "labelled false-colour third layer", at a tenth of GLD100's size and streamable |
+| `mosaic/Lunar_LROC_WAC_GLD100_ClrShade_79s79n_118m_v1_1.tif` | 11,185,005,343 | 3 RGB | **no**, striped, 0 ovr | 256 | 118.4 | the D7 pick; unusable by streaming, and LOLA ClrShade is the same job smaller |
+| `mosaic/LRO_LrocKaguya_Shade_60N60S_512ppd_cog.tif` | 2,574,022,967 | 1 | yes | 512 | 59.2 | shaded, so same mixing ban |
+| `mosaic/Lunar_LO_UVVISv2_Hybrid_Mosaic_Global_59m.tif` | 16,988,406,549 | 1 | no | 512 | 59.2 | §0b: **monochrome**, not the colour source §0 claimed |
+
+**D6 is superseded by the first row.** The plan was "L7 global, L8 for caps and ~10 site
+boxes" because I believed 59 m/px was the floor. Kaguya TC is 7.4 m/px global on our own
+grid, so L8 (41.6), L9 (20.8) and L10 (10.4 m/px) are all real data — L11 (5.2) is where
+interpolation starts. Global L10 is out for a local-first app (L0..L10 is 2,796,202 tiles),
+so the shape stays regional, but the *depth* goes from L8 to L10, and it is streamed:
+reading only the windows a site box needs costs a few hundred MB, not 78 GB.
+
+Two consequences to respect, both measured:
+
+1. Kaguya TC is a **shaded** orthophoto. It cannot feed `paper` (WAC albedo) or blend into
+   it at a level boundary; §2 item 4's illumination ban applies to it exactly as it applied
+   to GLD100. It earns its own labelled layer, or it does not ship.
+2. The polar COGs are internally **deflate**-compressed, not JPEG, so a browser-side
+   geotiff.js prototype needs an inflate path, and all three are in polar projections, so
+   feeding the equirectangular bake means resampling them, not just windowing.

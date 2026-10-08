@@ -114,11 +114,13 @@ describe('fuzzySearch over the real curated label set', () => {
     }
   });
 
-  // 12 of the 600 records have `bbox: null` (upstream defects). They must stay
-  // searchable — the card renders without a bbox row rather than throwing.
+  // 13 of the 1,585 records ship `bbox: null` (upstream defects, pinned in
+  // scripts/labels.py). They must stay searchable — the card renders without a
+  // bbox row rather than throwing.
   it('searches features whose bbox is null without dropping them', () => {
     const nullBbox = fc.features.filter((f) => f.properties.bbox === null);
-    expect(nullBbox.length).toBe(12);
+    expect(fc.features.length).toBe(1585);
+    expect(nullBbox.length).toBe(13);
     for (const f of nullBbox.slice(0, 3)) {
       const hit = fuzzySearch(f.properties.name, fc)[0];
       expect(hit.properties.name).toBe(f.properties.name);

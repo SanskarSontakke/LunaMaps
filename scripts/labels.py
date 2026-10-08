@@ -57,6 +57,13 @@ ASTRONAUT_CODE = 'LF'
 TIER1_MIN_CRATER_KM = 150.0
 TIER1_MIN_MONTES_KM = 200.0
 TIER2_MIN_LINE_KM = 100.0
+"""Amendment 2 D9: the label set ships everything the gazetteer can name, and the
+*renderer* decides what is on screen. 15 km is the floor because that is a
+~40-pixel crater at L5 (333 m/px), the level a regional view resolves; below it
+the name belongs to a feature nobody can see at the zoom where it would appear.
+Satellite craters (code SF, 7,064 of them) stay out entirely -- `test_satellite_
+features_are_dropped` pins that, and they would outnumber everything else."""
+TIER2_MIN_CRATER_KM = 15.0
 # Tier 2 is pruned first when the budget binds; tier 3 (visit features) last.
 DROP_ORDER = {2: 0, 1: 1, 0: 2, 3: 3}
 MISSION_RE = re.compile(r'(Apollo \d+|Surveyor \d+|Luna \d+|Chang’e \d+)')
@@ -69,10 +76,11 @@ MISSION_RE = re.compile(r'(Apollo \d+|Surveyor \d+|Luna \d+|Chang’e \d+)')
 # 'Brill' joins them as a convention artefact rather than a geometry defect --
 # its bbox is stored +/-180 while its centre is 0-360, so a naive gate cannot
 # trust it even though the wrapped comparison does; it stays pinned so its bbox
-# is nulled on the day it is curated (a 17 km crater, below today's floor), so
-# the pinned set has 20 members while the guard reports 19 geometry defects.
-# 12 of the pinned records are curated, all tier-3 astronaut-named Apollo 11/12
-# traverse features, which is why they ship null. A literal set, not a tolerance:
+# is nulled on the day it is curated, and amendment 2 D9 (15 km floor) is that
+# day, so the pinned set has 20 members while the guard reports 19 geometry
+# defects.
+# 13 of the pinned records are curated: 12 tier-3 astronaut-named Apollo 11/12
+# traverse features plus Brill, which is why they ship null. A literal set, not a tolerance:
 # the guard fails as soon as the set GROWS.
 # Verified against the fixture: every name below is a real gazetteer record and
 # every wrapped-frame defect is pinned (test_centre_is_inside_its_own_bbox...
@@ -227,8 +235,8 @@ def assign_tier(rec, min_crater_km: float):
     return None
 
 
-def curate(records, min_crater_km: float = 70.0, budget: int = 600,
-           return_stats: bool = False):
+def curate(records, min_crater_km: float = TIER2_MIN_CRATER_KM,
+           budget: int | None = None, return_stats: bool = False):
     kept = []
     for rec in records:
         if not rec.get('name') or rec.get('center_lat') is None:
@@ -239,7 +247,11 @@ def curate(records, min_crater_km: float = 70.0, budget: int = 600,
         row = dict(rec)
         row['tier'] = tier
         kept.append(row)
-    if len(kept) > budget:
+    # The budget is a ceiling, not the shipped default. Amendment 2 D9 puts the
+    # decision of *how many names are on screen* in the renderer, where the
+    # viewport is known, rather than here, where it is not; `None` ships every
+    # curated feature and the density control chooses how many to draw.
+    if budget is not None and len(kept) > budget:
         ranked = sorted(range(len(kept)),
                         key=lambda i: (DROP_ORDER[kept[i]['tier']],
                                        kept[i].get('diameter') or 0.0))

@@ -64,8 +64,11 @@ def test_tier_rules(records):
     assert by['Mare Undarum']['tier'] == 1        # a mare not named in tier 0
     assert by['Lacus Mortis']['tier'] == 1        # LC, 158.8 km
     assert by['Tycho']['tier'] == 1               # 85 km, tiered by fame
-    assert by['Kepler']['tier'] == 1              # 29 km, survives the 70 km cut
-    assert 'Shackleton' not in by                 # 20.9 km, below the cut
+    assert by['Kepler']['tier'] == 1              # 29 km, survives every cut
+    # D9 lowered the shipped crater floor to 15 km, so Shackleton (20.9 km, the
+    # south-pole PSR site) is now a tier-2 name. The boundary case moved below it.
+    assert by['Shackleton']['tier'] == 2          # 20.9 km
+    assert 'C. Herschel' not in by                # 13.7 km, below the floor
     assert all(r['tier'] in (0, 1, 2, 3) for r in by.values())
 
 
@@ -145,7 +148,11 @@ def test_pinned_records_ship_a_null_bbox_and_the_rest_contain_their_centre(recor
     props = [f['properties'] for f in feats['features']]
     nulled = [p for p in props if p['bbox'] is None]
     pinned_curated = [p for p in props if p['name'] in labels.KNOWN_BBOX_DEFECTS]
-    assert len(nulled) == len(pinned_curated) == 12
+    # 13, not 12: 'Brill' (17.0 km) crossed the lowered crater floor, which is
+    # exactly what its pin was for -- labels.py promises its bbox is nulled "on
+    # the day it is curated", and this is that day.
+    assert len(nulled) == len(pinned_curated) == 13
+    assert 'Brill' in {p['name'] for p in nulled}
     assert {p['name'] for p in nulled} == {p['name'] for p in pinned_curated}
     for f in feats['features']:
         if f['properties']['bbox'] is None:
@@ -153,13 +160,13 @@ def test_pinned_records_ship_a_null_bbox_and_the_rest_contain_their_centre(recor
         lon, lat = f['geometry']['coordinates']
         assert labels.bbox_contains(f['properties']['bbox'], lon, lat), \
             f['properties']['name']
-    # west > east is the documented antimeridian convention, not a defect:
-    # exactly these 10 curated features cross it and must still contain their centre.
+    # west > east is the documented antimeridian convention, not a defect. The
+    # set is measured, not remembered: the 15 km floor admitted four more
+    # near-0-degree craters (Dante, Dunár, Racah, Ricco) plus Shackleton, whose
+    # 20.9 km box straddles the seam, so 10 became 15.
     crossing = {p['name'] for p in props
                 if p['bbox'] is not None and p['bbox'][0] > p['bbox'][2]}
-    assert crossing == {'Plaskett', 'Rozhdestvenskiy', 'Von Kármán', 'Emden',
-                        'Larmor', 'Leeuwenhoek', 'Daedalus', 'Leibnitz',
-                        'Lipskiy', 'Minnaert'}
+    assert crossing == {'Daedalus', 'Dante', 'Dunér', 'Emden', 'Larmor', 'Leeuwenhoek', 'Leibnitz', 'Lipskiy', 'Minnaert', 'Plaskett', 'Racah', 'Ricco', 'Rozhdestvenskiy', 'Shackleton', 'Von Kármán'}
     for f in feats['features']:
         if f['properties']['name'] in crossing:
             lon, lat = f['geometry']['coordinates']
@@ -215,6 +222,8 @@ def test_apollonius_11_traverse_features_are_tier_3_with_missions(records):
 
 def test_all_81_astronaut_named_features_survive_any_prune(records):
     kept, stats = labels.curate(records, 70.0, budget=600, return_stats=True)
+    # Kept as a regression pin on the *explicit* old setting, not the default:
+    # the shipped default moved to 15 km / no budget with amendment 2 D9.
     unpruned = labels.curate(records, 70.0, budget=10_000)
     assert sum(1 for r in unpruned if r['tier'] == 3) == 81
     assert stats['by_tier']['3'] == 81
@@ -249,12 +258,14 @@ def test_tier1_overrides_are_live_and_land_in_tier_1(records):
     assert rumker['diameter'] == pytest.approx(73.24858, abs=1e-3)
 
 
-def test_label_population_is_pinned_at_600_after_the_rümker_fix(records):
+def test_the_historical_70km_600_setting_still_reproduces(records):
     """I1 count shift, recorded not regretted: the live override adds one tier-1.
 
     T1 133 -> 134, candidates 728 -> 729, pruned 128 -> 129, final 600 =
     17/134/368/81. The budget and the tier rules are unchanged.
     """
+    # Kept as a regression pin on the *explicit* old setting, not the default:
+    # the shipped default moved to 15 km / no budget with amendment 2 D9.
     unpruned = labels.curate(records, 70.0, budget=10_000)
     kept, stats = labels.curate(records, 70.0, budget=600, return_stats=True)
     assert len(unpruned) == 729
@@ -296,9 +307,9 @@ def test_main_exits_zero_and_writes_the_task_artifact(monkeypatch):
     assert out.exists(), 'features.json is this task\'s primary artifact'
     data = json.loads(out.read_text(encoding='utf-8'))
     assert data['type'] == 'FeatureCollection'
-    assert len(data['features']) == 600
+    assert len(data['features']) == 1585
     assert sum(1 for f in data['features']
-               if f['properties']['bbox'] is None) == 12
+               if f['properties']['bbox'] is None) == 13
 
 
 def test_main_refuses_to_write_when_the_defect_set_grows(monkeypatch, tmp_path):
