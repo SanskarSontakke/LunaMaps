@@ -18,6 +18,58 @@ export const MOON_ELLIPSOID = new Cesium.Ellipsoid(
   MOON_RADIUS_M,
 );
 
+/** Shared with `morph.ts`, which re-exports it: one clamp for the camera
+ *  controller, the URL state and the home framing. */
+export const clampHeight = (h: number) => Math.min(Math.max(h, MIN_H), MAX_H);
+
+/**
+ * How much of the narrower screen axis the disc may fill. Below 1 on purpose:
+ * a globe that touches all four edges reads as a cropped photo rather than a
+ * map, and the top-left controls and the bottom credit block need their margin.
+ */
+export const HOME_MARGIN = 0.86;
+
+/** The framing a square viewport at the default 60° fov would get — the answer
+ *  for a canvas or frustum that cannot be measured, so the fallback is derived
+ *  rather than invented. */
+export const FALLBACK_HOME_HEIGHT =
+  MOON_RADIUS_M / Math.sin(HOME_MARGIN * (Math.PI / 6)) - MOON_RADIUS_M;
+
+/**
+ * Nadir camera height that frames the whole globe in the viewport.
+ *
+ * The limb of a sphere is at `asin(R / (R + h))` from the camera axis, so that
+ * is the disc's on-screen angular radius; fitting it means solving for `h` with
+ * the radius set to `HOME_MARGIN` times the half-field of the *narrower* axis.
+ * Cesium's perspective frustum is vertical-fov with `aspectRatio` widening the
+ * horizontal, so the horizontal half-angle is `atan(tan(fov/2) * w/h)` — which
+ * is why a portrait canvas is limited by its width and a wide one by its height.
+ *
+ * Screen pixels cancel out entirely: only the aspect ratio and the fov matter.
+ */
+export function globeFitHeightMeters(
+  widthPx: number,
+  heightPx: number,
+  fovRad: number,
+  margin = HOME_MARGIN,
+): number {
+  if (
+    !Number.isFinite(widthPx) ||
+    !Number.isFinite(heightPx) ||
+    !Number.isFinite(fovRad) ||
+    widthPx <= 0 ||
+    heightPx <= 0 ||
+    fovRad <= 0 ||
+    fovRad >= Math.PI
+  ) {
+    return FALLBACK_HOME_HEIGHT;
+  }
+  const verticalHalf = fovRad / 2;
+  const horizontalHalf = Math.atan(Math.tan(verticalHalf) * (widthPx / heightPx));
+  const limb = Math.min(verticalHalf, horizontalHalf) * margin;
+  return clampHeight(MOON_RADIUS_M / Math.sin(limb) - MOON_RADIUS_M);
+}
+
 /**
  * Task 16, the paper look. `scene.globe.baseColor` is the colour of the globe
  * itself — it shows wherever no tile is loaded, which in paper mode is the band

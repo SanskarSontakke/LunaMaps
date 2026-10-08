@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
-import { createMoonViewer, MOON_ELLIPSOID } from '@/lib/cesium/moon';
+import { createMoonViewer, globeFitHeightMeters, MOON_ELLIPSOID } from '@/lib/cesium/moon';
 import {
   flyToFeature,
   getCameraState,
@@ -28,7 +28,6 @@ import NoAssets from './NoAssets';
 import ErrorPanel from './ErrorPanel';
 import { fuzzySearch } from '@/lib/search';
 import { attachKeyboard } from '@/lib/keyboard';
-import { cameraHeightForLevel } from '@/lib/grid';
 import {
   createUrlSync,
   parseHash,
@@ -123,10 +122,26 @@ export interface MoonHarness {
 // harness output.
 const MODE_NAMES = ['MORPHING', 'COLUMBUS_VIEW', 'SCENE2D', 'SCENE3D'];
 
-// Home view: Mare Tranquillitatis at L5 ground resolution (the Task 10
-// screenshot target). Height derived from the grid, never hard-coded.
+// Home view: centred on Mare Tranquillitatis, at whatever height frames the
+// whole globe in THIS viewport (gate G3 defect 3 — the previous height came from
+// `cameraHeightForLevel(5, 900, 60)` = 260 km, which is a close-up of one
+// quadrangle, and the 22,000 km the G3 hash asked for leaves a 110 px disc).
 const HOME = { lonDeg: 23.4731, latDeg: 0.6746 };
-const homeHeight = () => cameraHeightForLevel(5, 900, 60);
+
+/** Cesium's default 60° fov is vertical; an orthographic or 2D frustum has none,
+ *  and `globeFitHeightMeters` takes the fallback in that case. */
+const homeHeight = (viewer: Cesium.Viewer) => {
+  const frustum = viewer.camera.frustum;
+  const fov =
+    frustum instanceof Cesium.PerspectiveFrustum
+      ? (frustum.fov ?? Math.PI / 3)
+      : Math.PI / 3;
+  return globeFitHeightMeters(
+    viewer.canvas.clientWidth,
+    viewer.canvas.clientHeight,
+    fov,
+  );
+};
 
 // Paper and photo levels come strictly from the validated manifest — there is
 // no default or hardcoded fallback, so Cesium's maximumLevel always matches what
@@ -497,7 +512,7 @@ export default function MoonMap() {
         destination: Cesium.Cartesian3.fromDegrees(
           HOME.lonDeg,
           HOME.latDeg,
-          homeHeight(),
+          homeHeight(viewer),
           MOON_ELLIPSOID,
         ),
         orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },

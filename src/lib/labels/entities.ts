@@ -37,24 +37,38 @@ export function attachLabels(viewer: Cesium.Viewer, fc: FeatureCollection): Labe
       show: false,
       label: {
         text: f.properties.name,
-        font: '500 13px system-ui, sans-serif',
-        fillColor: Cesium.Color.fromCssColorString('rgba(238,238,238,0.62)'),
-        outlineColor: Cesium.Color.fromCssColorString('rgba(0,0,0,0.68)'),
-        outlineWidth: 1.5,
+        font: '600 13px system-ui, sans-serif',
+        // 0.62 alpha over a highland that bakes at 200/255 is not a name, it is a
+        // smudge — gate G3 defect 5. Near-opaque fill with a heavier dark outline
+        // is what survives both mare and highland; `saturate()` on the canvas only
+        // touches chroma, so this grey text is not tinted by it.
+        fillColor: Cesium.Color.fromCssColorString('rgba(246,246,246,0.94)'),
+        outlineColor: Cesium.Color.fromCssColorString('rgba(0,0,0,0.86)'),
+        outlineWidth: 2,
         style: Cesium.LabelStyle.FILL_AND_OUTLINE,
         horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         verticalOrigin: Cesium.VerticalOrigin.CENTER,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        translucencyByDistance: new Cesium.NearFarScalar(2e4, 0.85, 2.2e6, 0.25),
-        scaleByDistance: new Cesium.NearFarScalar(2e4, 0.95, 2.2e6, 0.72),
+        // The old pair faded to 0.25 by 2.2 Mm — which is *below* the whole-globe
+        // home framing (2.64 Mm on a portrait canvas), so the default view showed
+        // every name at its dimmest. The far stop now sits past the height that
+        // frames the disc, and the floor is where a name is still a name.
+        translucencyByDistance: new Cesium.NearFarScalar(2e4, 1.0, 6e6, 0.8),
+        scaleByDistance: new Cesium.NearFarScalar(2e4, 1.0, 6e6, 0.85),
       },
     });
     if (f.properties.tier === 3) {
+      // A saturated amber disc with a black ring out-shouts every name on the
+      // map, which is gate G3 defect 4. Two things bring it back: half the area
+      // and a low alpha. Low alpha matters more than it looks, because the
+      // canvas-wide `saturate()` in globe mode amplifies whatever chroma is
+      // already in the pixel — a 0.85-alpha amber composites to a chroma the
+      // filter then pushes to clipped orange.
       entity.point = new Cesium.PointGraphics({
-        pixelSize: 6,
-        color: Cesium.Color.fromCssColorString('rgba(255,214,102,0.85)'),
-        outlineColor: Cesium.Color.BLACK,
-        outlineWidth: 1,
+        pixelSize: 4,
+        color: Cesium.Color.fromCssColorString('rgba(255,214,102,0.3)'),
+        outlineColor: Cesium.Color.fromCssColorString('rgba(0,0,0,0.8)'),
+        outlineWidth: 1.5,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       });
     }

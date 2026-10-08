@@ -149,3 +149,95 @@ attribution block all render.
 
 None of these is a geometry or data fault — Gates G1/G2 still hold. All five are styling
 and framing, and all five are cheap.
+
+## 8. The five defects, measured and fixed — 2026-10-08
+
+A visible surface went away again mid-session, so the pass ran through headless Chrome
+instead: `work/shot.sh` captures `http://localhost:3000/<hash>` with
+`--headless=new --use-angle=swiftshader` and `work/measure.py` reads the composited PNG
+back. A real screenshot is required rather than `readPixels`, because every one of these
+fixes is a CSS `filter` on the canvas, and canvas filters happen after WebGL — the
+framebuffer probe cannot see them. `measure.py` exits non-zero unless the frame is
+plausible (a square-ish, lit blob), because `--virtual-time-budget` can stop on a frame
+whose labels are crisp and whose globe has not decoded yet, and that frame reproduces
+itself perfectly.
+
+### 8.1 Defect 1 was a display decision, not a bake fault
+
+The claim in §7 — "`k` is doing detail work, not hue work" — was wrong, and the
+measurement that would have settled it had not been run. Comparing
+`data/raw/lroc_color_poles.tif` (76 px/deg, RGB + alpha) against the baked `photo` tiles
+covering the same rectangle, at four levels:
+
+| tile | source sat50 | tile sat50 | source R−B | tile R−B |
+|---|---|---|---|---|
+| L2 2/1 | 0.060 | 0.060 | 6.38 | 6.08 |
+| L3 5/3 | 0.051 | 0.061 | 3.89 | 4.17 |
+| L5 16/8 | 0.075 | 0.079 | 9.90 | 10.35 |
+| L5 20/10 | 0.044 | 0.059 | 4.43 | 4.43 |
+| L5 28/12 | 0.065 | 0.056 | 6.10 | 5.23 |
+| L6 53/33 | 0.054 | 0.055 | 4.91 | 4.84 |
+| L6 2/32 | 0.045 | 0.038 | 7.23 | 6.39 |
+
+The bake reproduces the source's chroma to within about one count of R−B everywhere, so
+the composite is not discarding hue and a re-bake could not add any. There simply is not
+much there: the LROC colour mosaic is a 4–8-count R-over-B cast on a mean of 80–160, a
+median saturation near 0.05. Fixing the defect therefore belongs at the display, and it
+is a stated stretch, not a restoration: `saturate(2.6)` on the globe canvas, in
+`src/lib/look.ts` as `GLOBE_SATURATE`.
+
+Measured on the home frame, 800 × 900:
+
+| | before | after |
+|---|---|---|
+| disc on screen | 114 px (14 % of the short side) | 731 px (91 %) |
+| median saturation inside the disc | 0.050 | 0.109 |
+| mean R−B inside the disc | +10.6 | +13.3 |
+| the same view with the **Albedo** layer | — | sat50 0.000, R−B +0.73 |
+
+That last row is the check that the stretch is honest: `saturate()` scales chroma about
+each pixel's own grey, so the grayscale layer it produces is still exactly grayscale on
+screen.
+
+### 8.2 Paper, framing, markers, names
+
+- **Paper (defect 2).** `sepia(0.22) saturate(0.55) contrast(0.94) brightness(1.08)` over
+  an albedo map whose mean is 64/255 produced warm *grey*: measured R−B of +2.66. The
+  filter now runs `contrast(0.72) brightness(1.55) sepia(0.42) saturate(1.25)` — the
+  contrast/brightness pair is the affine floor-plus-scale that lifts a dark albedo map
+  into a light sheet (CSS filters are affine; no gamma is claimed). Same 2,600 km flat
+  view: mean L 61.7 → 123.1, R−B +2.66 → +24.2, p05 38.1 → 94.6, p95 99.0 → 169.0. The
+  relief spread survives, which is the part a naive brightness push would lose.
+- **Framing (defect 3).** `HOME` was `cameraHeightForLevel(5, 900, 60)` = 259,659 m, a
+  close-up of one quadrangle; the §7 run asked for 2.2e7 by hand and got a 110 px disc.
+  Neither was a framing of the globe. `globeFitHeightMeters()` in
+  `src/lib/cesium/moon.ts` now solves the limb relation `asin(R/(R+h))` against
+  `HOME_MARGIN` (0.86) times the half-field of the *narrower* screen axis, so the answer
+  follows the viewport instead of a constant. 2.64 Mm on an 800 × 900 canvas, 3.51 Mm on
+  the 564 × 786 tab §7 used. Five cases in `src/test/framing.test.ts`, including the
+  portrait/landscape axis switch and the clamp that keeps a slit viewport honest.
+- **Landing sites (defect 4).** `pixelSize` 6 → 4, fill alpha 0.85 → 0.3, outline
+  `Color.BLACK` → rgba(0,0,0,0.8) at width 1.5. The alpha is the part that matters in
+  globe mode: the canvas `saturate()` amplifies whatever chroma a pixel already carries,
+  so a saturated amber disc at 0.85 composites to a clipped orange blob.
+- **Names (defect 5a).** Fill 0.62 → 0.94 alpha, outline 1.5 → 2 px at 0.86, font weight
+  500 → 600, and the distance pair moved from `(2e4, 1.0, 2.2e6, 0.6)` to
+  `(2e4, 1.0, 6e6, 0.8)`. The old far stop sat *below* the new whole-globe home height, so
+  the default view showed every name at its dimmest — the fade was tuned against a
+  framing nobody was looking at.
+
+### 8.3 There is no compass rose
+
+§7 defect 5 and amendment 2 §3 both record a "compass rose" clipped under the top control
+bar. There is no compass in this app: `grep -i compass src/` is empty, Cesium's toolbar
+renders empty, and `document.elementFromPoint()` at the spot in question returns
+`NEXTJS-PORTAL`. It is the **Next.js dev-mode indicator**, a floating circular badge that
+development builds place over the map chrome. It does not exist in `next build`. The
+correction is recorded rather than argued: `devIndicators: false` in `next.config.mjs`
+takes it out of every dev capture, so what `npm run dev` shows is what ships.
+
+### 8.4 What is still open
+
+Amendment 2 §5 item 5 — the declutter cell assuming a 900 px viewport that is never read
+from the canvas — is untouched by this wave, and now more visible rather than less: the
+default view shows the whole disc with every tier on screen.

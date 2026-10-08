@@ -79,7 +79,9 @@ tiles**. Call it under an hour, not six.
 - Label styling and the landing-site marker treatment revised per D12.
 - Default camera framing replaced: the current 22,000 km home view shows a ~110 px disc in a
   564 × 786 canvas, which is a framing bug, not a taste question.
-- Compass rose is clipped under the top control bar in flat mode.
+- ~~Compass rose is clipped under the top control bar in flat mode.~~ There is no compass
+  rose: that badge is the Next.js dev-mode indicator (`NEXTJS-PORTAL`), which does not
+  exist in a production build. `devIndicators: false` removes it from dev captures.
 - Spec §4.5's performance budget is still unimplemented: no `maximumScreenSpaceError`, no
   tile-request concurrency cap, no latency or memory measurement.
 
@@ -99,10 +101,17 @@ without 1.5× its estimate.
 
 ## 5. Standing defects carried into this amendment
 
-1. The `photo` layer shows no visible colour — chroma injection is doing detail, not hue.
-2. The paper tint is imperceptible; the cream sheet is never seen because the 2D map fills
-   the viewport.
-3. Landing-site markers out-shine the names the brief asked to be subtle.
-4. Labels over bright highland terrain lose contrast.
-5. `verify-11.md` reports 116 labels at 3.5 × 10⁶ m where the live pass measured 93; the
-   declutter cell size assumes a 900 px viewport that is never read from the canvas.
+Fixed 2026-10-08, with the before/after numbers in `gate-G3-live.md` §8:
+
+1. ~~The `photo` layer shows no visible colour — chroma injection is doing detail, not
+   hue.~~ **The diagnosis was wrong.** The bake reproduces the source's chroma to within
+   ~1 count of R−B at every level; the LROC colour mosaic simply measures a median
+   saturation near 0.05. It is a display stretch now (`GLOBE_SATURATE`), stated as one.
+2. ~~The paper tint is imperceptible.~~ Fixed by lifting the floor as well as warming it.
+3. ~~Landing-site markers out-shine the names.~~ Fixed: half the area, a fifth of the alpha.
+4. ~~Labels over bright highland terrain lose contrast.~~ Fixed, and the distance fade was
+   moved because its far stop sat below the whole-globe home height.
+5. **Still open.** `verify-11.md` reports 116 labels at 3.5 × 10⁶ m where the live pass
+   measured 93; the declutter cell size assumes a 900 px viewport that is never read from
+   the canvas. The new default framing puts every tier on screen at once, so this one is
+   now more exposed, not less.

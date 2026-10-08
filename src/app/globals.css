@@ -33,6 +33,14 @@ main {
    (a canvas-wide filter) and not a cartographic colour ramp — no hypsometric
    tints, no contours; see docs/superpowers/specs/verify-16.md.
 
+   `contrast(0.72) brightness(1.55)` first, then the warmth. Raw albedo has a mean
+   of 64/255 (public/tiles/manifest.json, `albedoHistogram`), so a filter that only
+   tints it produces warm *grey* — which is what gate G3 saw and called
+   imperceptible. `contrast(<1)` compresses toward mid grey and `brightness(>1)`
+   shifts up; the two together are the affine floor-plus-scale that lifts a dark
+   albedo map into a light sheet while keeping mare darker than highlands. CSS
+   filters are affine, so no gamma is available here and none is pretended.
+
    `#efe9dc` must stay the same value as PAPER_BASE_COLOR in src/lib/cesium/moon.ts
    (the globe's own colour, visible around the rectangular world); the pairing is
    pinned by src/test/paperTint.test.ts. */
@@ -40,10 +48,17 @@ main {
   background: #efe9dc;
 }
 .map-host[data-mode='paper'] canvas {
-  filter: sepia(0.22) saturate(0.55) contrast(0.94) brightness(1.08);
+  filter: contrast(0.72) brightness(1.55) sepia(0.42) saturate(1.25);
 }
+/* The colour layer's chroma is real but tiny, and no re-bake can add what the
+   source never had: measured against `data/raw/lroc_color_poles.tif`, the baked
+   `photo` tiles reproduce the source within ~1 count of R-B at L2/L3/L5/L6, at a
+   median saturation of 0.04-0.08 (see docs/superpowers/specs/gate-G3-live.md §8).
+   So the stretch is a display decision, stated as one: `saturate(2.6)` scales
+   chroma about the pixel's own grey, which is why the grayscale albedo layer and
+   the black-and-white label text are untouched by it. */
 .map-host[data-mode='globe'] canvas {
-  filter: saturate(1.04) contrast(1.02);
+  filter: saturate(2.6) contrast(1.02);
 }
 .ui {
   position: fixed;

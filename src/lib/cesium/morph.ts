@@ -1,11 +1,18 @@
 import * as Cesium from 'cesium';
 import type { LayerName, Mode } from '@/types';
-import { MAX_H, MIN_H, MOON_ELLIPSOID, baseColorFor, makeProvider } from './moon';
+import {
+  MAX_H,
+  MIN_H,
+  MOON_ELLIPSOID,
+  baseColorFor,
+  clampHeight,
+  makeProvider,
+} from './moon';
 
-// The height limits are defined once in moon.ts (where the screen-space
-// controller is configured) and re-exported here so callers and tests keep
-// importing them from morph.ts without a second, drifting copy.
-export { MAX_H, MIN_H };
+// The height limits and the height clamp are defined once in moon.ts (where the
+// screen-space controller is configured) and re-exported here so callers and
+// tests keep importing them from morph.ts without a second, drifting copy.
+export { MAX_H, MIN_H, clampHeight };
 /** Duration passed to Cesium's scene morph, in seconds. */
 export const MORPH_SECONDS = 0.5;
 /**
@@ -47,8 +54,6 @@ export interface CameraState {
   heading: number;
   pitch: number;
 }
-
-export const clampHeight = (h: number) => Math.min(Math.max(h, MIN_H), MAX_H);
 
 export function getCameraState(viewer: Cesium.Viewer): CameraState {
   const c = viewer.camera.positionCartographic;
