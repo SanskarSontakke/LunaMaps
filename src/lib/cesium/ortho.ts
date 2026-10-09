@@ -74,6 +74,19 @@ export const ORTHO_MAX_LEVEL = MAX_TOP_LEVEL;
  * the picture is identical: what refuses L0–L7 is availability, not the clamp.
  * The brief asked for `minimumLevel: 8`; the review measured what that costs and
  * the controller ruled against the brief (task-3-findings, Important 2).
+ *
+ * The condition on that ruling is discharged. Measured live over CDP in four states
+ * (driver kept out of git as `work/perf_probe.mjs` and `work/perf-minimumLevel.json`,
+ * like every other capture tool here; run twice, every count reproduced identically): inside a region the overlay is asked for 12 tiles and 12
+ * HTTP requests follow, plus 5 sentinel answers for the L0-L7 terrain tiles; outside
+ * every region it is asked for 28 and issues no request at all -- the gate, not the
+ * clamp, is what refuses, exactly as argued above. Tiles-to-render is 5 inside and 2
+ * outside with the overlay on or off. SwiftShader frame time goes 73.3 -> 89.3 ms
+ * inside a region (the 12 new 512 px textures) and is unchanged outside (78.2 -> 75.5
+ * ms); the second run gave +18.4% and -5.3%. Absolute milliseconds are CPU rasterised,
+ * not this machine's GPU, and the viewer runs in `requestRenderMode`, so the cost is
+ * paid on interaction frames rather than continuously. Zero tile errors in all four
+ * states. `0` stays.
  */
 const ORTHO_ADVERTISED_MIN_LEVEL = 0;
 
