@@ -902,8 +902,8 @@ def test_only_bakes_one_region_and_its_help_says_why(tmp_path, monkeypatch, caps
     assert tile_names(out) == ['ortho/1/2/0.jpg']
     assert 'availab' in capsys.readouterr().out.lower()
     help_text = ' '.join(stream_bake.parser().format_help().split())
-    assert '22-tile' in help_text and '23,040' in help_text, \
-        '--only exists so the first real run is one small box, not the polar cap'
+    assert '22-tile' in help_text and '7,132' in help_text, \
+        '--only exists so the first real run is one small box, not the whole plan'
 
 
 def test_a_run_bakes_every_region_and_reports_availability(tmp_path, monkeypatch,

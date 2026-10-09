@@ -582,6 +582,84 @@ def test_reindex_rebuilds_from_disk_and_keeps_the_gate_verdicts(tmp_path,
     assert 'bakes nothing' in m['reindex']['note']
 
 
+def seed_layers(out, levels=(0, 1)):
+    """A plausible delivered tree for `paper` and `photo`, and nothing else.
+
+    Small on purpose: these tests are about the manifest a run writes, and a
+    20-tile tree makes "the reindex wrote no tiles" checkable by counting.
+    """
+    import numpy as _np
+    from PIL import Image
+    for layer in ('paper', 'photo'):
+        for level in levels:
+            for x in range(grid.level_cols(level)):
+                for y in range(grid.level_rows(level)):
+                    d = out / layer / str(level) / str(x)
+                    d.mkdir(parents=True, exist_ok=True)
+                    Image.fromarray(_np.full((512, 512), 90, _np.uint8)).save(
+                        d / f'{y}.jpg', quality=85)
+
+
+def ortho_record():
+    """The real `layers.ortho`, as `stream_bake.py --publish` wrote it."""
+    return json.loads(SHIPPED_MANIFEST.read_text(
+        encoding='utf-8'))['layers']['ortho']
+
+
+def test_a_reindex_carries_everything_it_does_not_own(tmp_path, monkeypatch):
+    """`base_manifest()` starts from `layers: {}`, and both write paths rebuild from
+    it, so anything another tool added -- the availability-gated `ortho` record, or a
+    top-level key that does not exist yet -- vanished silently. That is the defect
+    class that already ate `geometryProof`, and the two-name whitelist is why
+    `geometryProof` survived it. The rule is now "carry what you do not own", so the
+    next record added by a different stage cannot be deleted by a reindex nobody
+    thought about.
+    """
+    out = tmp_path / 'tiles'
+    seed_layers(out)
+    shipped = json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8'))
+    shipped['labelIndex'] = {'generatedBy': 'labels.py', 'count': 1585}
+    (out / 'manifest.json').write_text(json.dumps(shipped, indent=1) + '\n',
+                                       encoding='utf-8')
+    monkeypatch.setattr(sys, 'argv', ['bake.py', '--reindex', '--out', str(out)])
+    assert bake.main() == 0
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert m['layers']['ortho'] == ortho_record(), \
+        'the reindex deleted the deep-zoom record another tool published'
+    assert m['labelIndex'] == shipped['labelIndex'], 'an unknown key was dropped'
+    assert set(m['layers']) == {'paper', 'photo', 'ortho'}
+    assert parse_manifest_app(m) is not None, \
+        'assets.ts would refuse the manifest this reindex wrote'
+    assert len(list(out.rglob('*.jpg'))) == 20, 'a reindex still writes tiles'
+
+
+def test_a_one_layer_bake_carries_the_ortho_record(tmp_path):
+    """Same hole in the bake path: `carried_layers` is limited to `PRODUCT_LAYERS`,
+    so a `--layer photo` run re-measures `paper` from the tree and drops `ortho`
+    entirely. Following the disk refusal's own advice would then take the deep-zoom
+    layer down with it.
+    """
+    detail = fake_raster(tmp_path / 'detail.tif', count=1)
+    color = fake_raster(tmp_path / 'color.tif', count=4)
+    out = tmp_path / 'tiles'
+    bake.run(detail=detail, color=color, layers=('paper', 'photo'), top=1,
+             quality=85, band_rows=512, k=0.4, out_dir=str(out), force=True,
+             quiet=True)
+    record = ortho_record()
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    m['layers']['ortho'] = record
+    manifest.write_manifest(out / 'manifest.json', m)
+
+    bake.run(detail=detail, color=color, layers=('photo',), top=1, quality=85,
+             band_rows=512, k=0.4, out_dir=str(out), quiet=True)
+    after = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert after['layers']['ortho'] == record, \
+        'a one-layer bake deleted the layer it does not own'
+    assert parse_manifest_app(after) is not None
+    assert 'baked' in after['layers']['photo'], \
+        'carrying a foreign layer must not silence the writes this run made'
+
+
 def test_baked_levels_ignores_a_layer_that_was_not_baked(tmp_path):
     (tmp_path / 'probe' / '1' / '0').mkdir(parents=True)
     (tmp_path / 'probe' / '1' / '0' / '0.jpg').write_bytes(b'x')
@@ -875,10 +953,12 @@ def test_the_shipped_manifest_carries_a_valid_ortho_record():
     assert parsed['layers']['photo'] == {'top': TIER_B_TOP}
     assert parsed['layers']['ortho'] == {'top': ortho['top'],
                                          'availability': ortho['availability']}
-    # Provenance the publish records, kept honest against the delivered tree.
+    # Provenance the publish records: one source, and the regions the plan shipped.
+    # Which regions those are, and that they are all on disk, is re-derived from both
+    # files in test_the_published_ortho_counts_are_re_derived_from_the_delivered_tree;
+    # naming the cap here would only repeat a decision that test already pins.
     assert ortho['source'] == 'kaguya-tc'
-    assert ortho['regions'], 'the record names the regions it published'
-    assert 'south-polar-cap' not in ortho['regions']
+    assert ortho['regions'], 'the record names no region it published'
 
 
 # The one guard in this file that reads a delivered tile tree rather than a tracked
@@ -930,23 +1010,22 @@ def test_the_published_ortho_counts_are_re_derived_from_the_delivered_tree():
     assert ortho['bytes'] == sum(p.stat().st_size for p in on_disk.values())
     assert ortho['top'] == max(L for L, _, _ in on_disk)
 
-    # The south polar cap is missing from the record because not one of its planned
-    # tiles was ever written -- the justification for the exclusion, checked against
-    # the plan file and the tree rather than taken on the writer's word.
-    cap = next(r for r in json.loads(
-        (REPO / 'public' / 'data' / 'regions.json').read_text(
-            encoding='utf-8'))['regions'] if r['id'] == 'south-polar-cap')
-    assert cap['source'] == 'nac-spole', 'the refused source, per the shipped plan'
-    cap_tiles = {(L, x, y)
-                 for L in regions.levels_of(cap)
-                 for r in regions.tile_ranges(regions.box_of(cap), L)
-                 for x in range(r[0], r[1] + 1)
-                 for y in range(r[2], r[3] + 1)}
-    assert cap_tiles, 'the cap does plan tiles, so the exclusion is not vacuous'
-    assert not (cap_tiles & set(on_disk)), 'and none of them are on disk'
-    assert set(ortho['regions']) <= {r['id'] for r in json.loads(
-        (REPO / 'public' / 'data' / 'regions.json').read_text(
-            encoding='utf-8'))['regions']}, 'the record cites shipped region ids'
+    # The plan and the delivery are now the same set of regions, which is what
+    # dropping the south polar cap bought: the cap was the one region whose tiles
+    # could not be baked honestly from any measured source (the two sources and the
+    # arithmetic are in scripts/regions.py and in amendment 2 §7). A region that
+    # reappears in the plan without ever reaching the disk fails here, and so does a
+    # region added to the record that the plan never promised.
+    plan = json.loads((REPO / 'public' / 'data' / 'regions.json').read_text(
+        encoding='utf-8'))['regions']
+    planned = {r['id'] for r in plan}
+    assert 'south-polar-cap' not in planned, 'the cap is out of the plan, by decision'
+    assert {r['source'] for r in plan} == {'kaguya-tc'}, (
+        'every shipped region is served by the one source measured to cover it: a '
+        'second shaded mosaic in this pyramid is the mixing ban, not a level')
+    assert planned == set(ortho['regions']), (
+        f'planned but not delivered: {sorted(planned - set(ortho["regions"]))}; '
+        f'delivered but not planned: {sorted(set(ortho["regions"]) - planned)}')
 
 
 def test_a_stale_manifest_without_ortho_still_boots():

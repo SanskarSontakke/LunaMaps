@@ -333,6 +333,40 @@ def carried_layers(out: Path, baked) -> tuple:
                  if l not in baked and (out / l).is_dir())
 
 
+# The manifest keys a bake run produces itself. Anything else in a delivered
+# manifest belongs to another stage and is carried, not rebuilt.
+MANIFEST_OWNED = frozenset(('schema', 'generatedAt', 'grid', 'levels', 'sources',
+                            'layers', 'timings', 'capabilities', 'reindex'))
+
+
+def carry_foreign(prev: dict, m: dict, baked) -> list:
+    """Carry the parts of a delivered manifest this run did not produce.
+
+    Both write paths rebuild from `manifest.base_manifest()`, which starts at
+    `layers: {}`. `carried_layers` is limited to `PRODUCT_LAYERS`, and the top-level
+    carry was a whitelist of two names, so anything another stage added disappeared:
+    the next `--reindex` or one-layer bake deleted the availability-gated `ortho`
+    record that `stream_bake.py --publish` wrote, taking the deep-zoom layer down with
+    it while every test stayed green. `geometryProof` survived that defect class only
+    because someone added it to the whitelist by hand after it went missing once.
+
+    The rule is therefore structural -- carry what you do not own -- so a record added
+    by a stage nobody has written yet cannot be silently dropped either. Returns the
+    names carried, which `--reindex` prints: a manifest edit that cannot say what it
+    left alone is not auditable.
+    """
+    carried = []
+    for name, rec in (prev.get('layers') or {}).items():
+        if name not in baked and name not in m['layers']:
+            m['layers'][name] = rec
+            carried.append(f'layers.{name}')
+    for key, value in prev.items():
+        if key not in MANIFEST_OWNED and key not in m:
+            m[key] = value
+            carried.append(key)
+    return carried
+
+
 def layer_record(out: Path, layer: str, quality, detail_gain,
                  top: int | None = None,
                  counts: tuple[int, int] | None = None) -> dict:
@@ -421,6 +455,8 @@ def run(detail: str, color: str, layers=PRODUCT_LAYERS, top: int = 6,
         if prev_manifest.get('generatedAt'):
             rec['carriedFrom'] = prev_manifest['generatedAt']
         m['layers'][layer] = rec
+    # Layers and keys this run has no business rebuilding (see `carry_foreign`).
+    carry_foreign(prev_manifest, m, layers)
     sha = Path('data/raw/sha256.json')
     m['sources'] = json.loads(sha.read_text()) if sha.exists() else []
     m['timings']['bakeSeconds'] = round(time.time() - t0, 1)
@@ -470,9 +506,7 @@ def reindex(out_dir: str = OUT_DEFAULT, layers=PRODUCT_LAYERS,
     m['capabilities'] = (json.loads(caps.read_text(encoding='utf-8'))
                          if caps.exists() else prev.get('capabilities', {}))
     m['timings'] = prev.get('timings', {})
-    for key in ('albedoHistogram', 'geometryProof'):
-        if key in prev:
-            m[key] = prev[key]
+    carried = carry_foreign(prev, m, layers)
     m['reindex'] = {
         'at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
         'command': f'npm run bake -- --reindex --out {out_dir}',
@@ -480,8 +514,7 @@ def reindex(out_dir: str = OUT_DEFAULT, layers=PRODUCT_LAYERS,
         'rebuilt': ['levels (only those with tiles on disk)', 'layers.top',
                     'layers.tiles', 'layers.bytes', 'sources', 'capabilities'],
         'carriedForward': ['generatedAt', 'timings', 'layers.quality',
-                           'layers.detailGain', 'albedoHistogram',
-                           'geometryProof'],
+                           'layers.detailGain', *carried],
         'note': ('written by --reindex, which counts the delivered tree and '
                  'bakes nothing; `baked`/`derived` are per-run write counts and '
                  'so only a real bake records them'),
