@@ -355,3 +355,286 @@ def test_estimate_grows_superlinearly():
     b = bake.estimate(7, ('paper', 'photo'))
     assert b['files'] == a['files'] + 2 * grid.level_cols(7) * grid.level_rows(7)
     assert b['bytes'] > a['bytes'] * 2
+
+
+# ==========================================================================
+# MUST FIX 1 (2026-10-09 whole-branch review): a resume ignores the encoder
+# parameters that produced the files.
+#
+# `save_tile` skips a tile when the FILE exists, not when the file exists WITH
+# THE PARAMETERS THIS RUN IS ASKING FOR, and `derive.derive_levels` re-encodes
+# every parent unconditionally. The reviewer's reproduction over the delivered
+# q85 tree is `bake.py --top 7 --layer photo --quality 30`: the 32,768 L7
+# children keep q85, the 10,922 derived parents come back at q30, and `run()`
+# then publishes `layers.photo.quality = 30` -- a manifest that mislabels the
+# majority of its own tree. The fix is to REFUSE, not to silently re-encode.
+# ==========================================================================
+
+def tree_state(out):
+    """Every delivered byte: per-tile size, per-tile mtime, manifest text.
+
+    A refusal has to be proved to have written NOTHING, and "the sizes look the
+    same" is not that proof -- a re-encode can land on the same size.
+    """
+    return ({str(p.relative_to(out)).replace('\\', '/'):
+             (p.stat().st_size, p.stat().st_mtime_ns)
+             for p in sorted(out.rglob('*.jpg'))},
+            (out / 'manifest.json').read_text(encoding='utf-8'))
+
+
+def test_a_resume_with_a_changed_quality_refuses_and_writes_nothing(sources,
+                                                                    tmp_path):
+    """The defect, end to end: the second run asks for q30 over a tree the first
+    run wrote at q85, so it must stop before writing a byte rather than publish
+    one `quality` for a tree holding two."""
+    import bake
+    out = tmp_path / 'tiles'
+    wrote = bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1,
+                                   quality=85))
+    assert wrote == 10, wrote                 # 8 children + 2 parents
+    before = tree_state(out)
+
+    with pytest.raises(bake.EncoderMismatchError) as exc:
+        bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1,
+                               quality=30, force=False))
+    msg = str(exc.value)
+    assert 'layers.photo.quality' in msg, msg
+    assert '85' in msg and '30' in msg, 'must name the recorded AND the requested'
+    assert '--force' in msg, 'must name the escape hatch'
+    assert tree_state(out) == before, 'the refusal wrote something'
+
+
+def test_a_resume_with_a_changed_detail_gain_refuses(sources, tmp_path):
+    """`detailGain` is an encoder parameter too: k changes every photo pixel, so
+    a resume that keeps the old children and re-encodes the parents at a new k
+    mislabels the tree in exactly the same way, and the record carries the value
+    (`layers.photo.detailGain`) needed to notice it."""
+    import bake
+    out = tmp_path / 'tiles'
+    bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1, quality=85,
+                           k=0.4))
+    before = tree_state(out)
+    with pytest.raises(bake.EncoderMismatchError) as exc:
+        bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1,
+                               quality=85, k=0.9, force=False))
+    msg = str(exc.value)
+    assert 'detailGain' in msg, msg
+    assert '0.4' in msg and '0.9' in msg, msg
+    assert '--force' in msg, msg
+    assert tree_state(out) == before
+
+
+def test_a_no_detail_resume_refuses_when_the_tree_was_baked_with_detail(
+        sources, tmp_path):
+    """`--no-detail` is a real encoder change (k: 0.4 -> None), and the guard has
+    to read a recorded `None` as "this tree was baked without the composite",
+    not as "the record says nothing"."""
+    import bake
+    out = tmp_path / 'tiles'
+    bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1, quality=85,
+                           k=0.4))
+    with pytest.raises(bake.EncoderMismatchError, match='detailGain'):
+        bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1,
+                               quality=85, k=None, force=False))
+
+
+def test_a_paper_resume_is_not_refused_for_the_photos_detail_gain(sources,
+                                                                  tmp_path):
+    """The guard must not over-refuse. `paper` is the raw detail band: its record
+    has no detail gain at all, so this run's `--detail-gain` cannot contradict
+    it, and a paper-only resume with a k nobody uses has to be allowed."""
+    import bake
+    out = tmp_path / 'tiles'
+    bake.run(**bake_kwargs(sources, out, layers=('paper', 'photo'), top=0,
+                           quality=85, k=0.4))
+    again = bake.run(**bake_kwargs(sources, out, layers=('paper',), top=0,
+                                   quality=85, k=0.0, force=False))
+    assert again == 0, again                  # a genuine zero-write resume
+
+
+def test_a_resume_of_a_layer_the_run_does_not_write_is_never_blocked(
+        sources, tmp_path):
+    """The guard must not over-refuse across layers. `paper` is delivered at q85
+    and is CARRIED by a photo-only run, not re-encoded, so a first-ever
+    `--layer photo --quality 30` (no photo record to contradict) has to be
+    allowed -- that is the command the disk refusal itself advises, and blocking
+    it would make the advice unfollowable even under --force.
+    """
+    import bake
+    out = tmp_path / 'tiles'
+    bake.run(**bake_kwargs(sources, out, layers=('paper',), top=0, quality=85,
+                           k=0.4))
+    first_stamp = json.loads((out / 'manifest.json').read_text(
+        encoding='utf-8'))['generatedAt']
+
+    bake.run(**bake_kwargs(sources, out, layers=('photo',), top=0, quality=30,
+                           k=0.4, force=False))
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert m['layers']['photo']['quality'] == 30      # this run, q30
+    assert m['layers']['paper']['quality'] == 85      # carried, still q85
+    assert m['layers']['paper']['carriedFrom'] == first_stamp
+
+
+def test_force_is_the_escape_hatch_and_rebakes_the_layer_consistently(
+        sources, tmp_path):
+    """With --force the layer is deleted and re-baked, so every file in it really
+    is q30 and the record saying 30 is then true."""
+    import bake
+    out = tmp_path / 'tiles'
+    bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1, quality=85))
+    before = tree_state(out)
+    wrote = bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1,
+                                   quality=30, force=True))
+    assert wrote == 10, wrote
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert m['layers']['photo']['quality'] == 30
+    after = tree_state(out)
+    assert after[0] != before[0], '--force re-baked nothing'
+    assert all(v[1] > b[1] for (v, b) in
+               zip(after[0].values(), before[0].values())), \
+        'every delivered photo tile must have been rewritten'
+
+
+def test_a_record_that_states_no_quality_cannot_be_contradicted(sources, tmp_path):
+    """`quality: null` is a state a `--reindex` of a tree that never recorded one
+    can leave behind. The guard refuses when the delivered record CONTRADICTS this
+    run; it must not refuse because the artifact admits it does not know, because
+    that would block the very run that could put a true value in the record."""
+    import bake
+    import manifest
+    out = tmp_path / 'tiles'
+    bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1, quality=85))
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    m['layers']['photo']['quality'] = None
+    manifest.write_manifest(out / 'manifest.json', m)
+    wrote = bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1,
+                                   quality=30, force=False))
+    assert wrote == 2, wrote      # the top tiles exist; the parents are re-encoded
+    after = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert after['layers']['photo']['quality'] == 30, \
+        'a run that cannot be contradicted still records what it encoded at'
+
+
+def test_the_recorded_and_requested_qualities_measurably_encode_differently(
+        tmp_path):
+    """The premise of the refusal, measured here rather than quoted: JPEG
+    `quality` is not a label, it changes the bytes, so one number cannot describe
+    a tree encoded with two.
+
+    The review measured the same pixels at 165,079 B (q85) and 83,555 B (q30);
+    this fixture is a 512x512 tile, so only the RATIO is comparable, and the
+    assertion is that q30 costs under 70% of q85 -- far outside any noise.
+    """
+    from PIL import Image
+    import numpy as _np
+    rng = _np.random.default_rng(20261009)
+    grad = _np.add.outer(rng.integers(0, 60, 512), rng.integers(0, 60, 512))
+    arr = _np.clip(grad + _np.arange(512)[None, :] // 4, 0,
+                   255).astype(_np.uint8)
+    sizes = {}
+    for q in (85, 30):
+        p = tmp_path / f'q{q}.jpg'
+        Image.fromarray(arr).save(p, quality=q, optimize=True)
+        sizes[q] = p.stat().st_size
+    assert sizes[30] < 0.7 * sizes[85], sizes
+
+
+# ==========================================================================
+# MUST FIX 2 (2026-10-09 whole-branch review): a zero-write resume restamps the
+# whole pyramid.
+#
+# `run()` called `base_manifest()` WITHOUT `generated_at`, so `manifest.py`
+# stamped `now()`: a resume that baked 0 tiles re-dated 87,380 files it never
+# touched, while `reindex()` deliberately carries the stamp forward because
+# `Attribution` renders `generatedAt` to the user as the bake date.
+#
+# THE RULE (chosen and implemented in `bake.run`): `generatedAt` dates the
+# PIXELS. Carry it when the run wrote nothing; restamp when it wrote anything.
+# ==========================================================================
+
+FROZEN_STAMP = '2026-01-01T00:00:00+00:00'
+
+
+def freeze_stamp(out, stamp=FROZEN_STAMP):
+    """Pin the delivered stamp to a date the run cannot coincide with, so
+    'carried' and 'restamped' are distinguishable in a millisecond."""
+    import manifest
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    m['generatedAt'] = stamp
+    manifest.write_manifest(out / 'manifest.json', m)
+    return stamp
+
+
+def test_a_zero_write_resume_keeps_the_delivered_bake_stamp(sources, tmp_path):
+    """0 writes == 0 pixels changed == nothing honest to re-date."""
+    import bake
+    out = tmp_path / 'tiles'
+    bake.run(**bake_kwargs(sources, out, layers=('paper',), top=0))
+    stamp = freeze_stamp(out)
+    before = tree_state(out)
+
+    wrote = bake.run(**bake_kwargs(sources, out, layers=('paper',), top=0,
+                                   force=False))
+    assert wrote == 0, wrote
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert m['generatedAt'] == stamp, \
+        'a run that wrote no tile re-dated the whole pyramid'
+    assert tree_state(out)[0] == before[0], 'the resume rewrote a tile anyway'
+
+
+def test_a_run_that_writes_a_single_tile_restamps(sources, tmp_path):
+    """The other half of the rule: the stamp describes the artifact, so a run
+    that changed any pixel restamps. A parent-only resume (top=1: 0 baked, 2
+    parents re-encoded) is a run that wrote, and must move the date -- which is
+    exactly why `derived` is counted and printed separately from `baked`."""
+    import bake
+    out = tmp_path / 'tiles'
+    bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1, quality=85))
+    stamp = freeze_stamp(out)
+
+    wrote = bake.run(**bake_kwargs(sources, out, layers=('photo',), top=1,
+                                   quality=85, force=False))
+    assert wrote == 2, wrote
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert m['layers']['photo']['baked'] == 0
+    assert m['layers']['photo']['derived'] == 2
+    assert m['generatedAt'] != stamp, 'a run that wrote 2 tiles kept the old date'
+    from datetime import datetime
+    assert datetime.fromisoformat(m['generatedAt']) > \
+        datetime.fromisoformat(stamp), m['generatedAt']
+
+
+def test_a_force_rebake_restamps(sources, tmp_path):
+    """--force deletes the layer and bakes a new one: the artifact changed, so
+    the date changes with it."""
+    import bake
+    out = tmp_path / 'tiles'
+    bake.run(**bake_kwargs(sources, out, layers=('photo',), top=0, quality=85))
+    stamp = freeze_stamp(out)
+    wrote = bake.run(**bake_kwargs(sources, out, layers=('photo',), top=0,
+                                   quality=85, force=True))
+    assert wrote == 2, wrote
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert m['generatedAt'] != stamp
+
+
+def test_the_stamp_rule_matches_the_one_reindex_already_follows(sources, tmp_path,
+                                                                monkeypatch):
+    """The two zero-write paths -- `--reindex` and a 0-tile resume -- must not
+    disagree about what `generatedAt` means, because both face the user through
+    `Attribution`."""
+    import bake
+    out = tmp_path / 'tiles'
+    bake.run(**bake_kwargs(sources, out, layers=('photo',), top=0, quality=85))
+    stamp = freeze_stamp(out)
+    wrote = bake.run(**bake_kwargs(sources, out, layers=('photo',), top=0,
+                                   quality=85, force=False))
+    assert wrote == 0
+    after_bake = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert after_bake['generatedAt'] == stamp
+
+    monkeypatch.setattr(sys, 'argv', ['bake.py', '--reindex', '--out', str(out)])
+    assert bake.main() == 0
+    after_reindex = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert after_reindex['generatedAt'] == stamp, \
+        'reindex carries the stamp but a zero-write bake does not'

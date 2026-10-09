@@ -1216,3 +1216,308 @@ def test_the_transcription_is_more_permissive_than_the_writer_on_two_point_zero(
     assert _app_parse_availability(block, 10) is not None
     assert parse_manifest_app(
         manifest_with_ortho({'top': 10, 'availability': block})) is not None
+
+
+# --------------------------------------------------------------------------
+# 10. MUST FIX 1 of the 2026-10-09 review, at the COMMAND level: a resume whose
+#     encoder flags differ from the delivered record must stop before it writes.
+#
+# `test_bake_synthetic.py` proves the refusal at the `run()` level; this section
+# proves the operator-visible half of the same defect: the exit code, the message
+# (recorded value, requested value, the --force escape), and that a refusal leaves
+# every delivered byte where it found it.
+# --------------------------------------------------------------------------
+
+DELIVERED_STAMP = '2026-01-01T00:00:00+00:00'
+
+
+def delivered_manifest(out, quality=85, gain_photo=0.4):
+    """The record a q85 bake writes for the 20-tile tree `seed_layers` makes.
+
+    Hand-built rather than baked, because the point is the state a RESUME reads:
+    `layers.<name>.quality` / `.detailGain` / `.tiles`, and nothing else.
+    """
+    def rec(layer, tiles, q, gain):
+        return {'top': 1, 'tiles': tiles, 'bytes': 4096 * tiles, 'quality': q,
+                'photometric': 'MINISBLACK' if layer == 'paper' else 'YCbCr',
+                'detailGain': gain}
+
+    m = {'schema': 1, 'generatedAt': DELIVERED_STAMP,
+         'grid': {'tileSize': grid.TILE, 'radiusMeters': grid.MOON_RADIUS_M,
+                  'yOrigin': 'north', 'prjWkt': contract.MOON_WKT},
+         'levels': [{'L': L, 'cols': grid.level_cols(L),
+                     'rows': grid.level_rows(L),
+                     'mPerPx': round(grid.m_per_px(L), 2)} for L in (0, 1)],
+         'sources': [],
+         'layers': {'paper': rec('paper', 10, quality, None),
+                    'photo': rec('photo', 10, quality, gain_photo)},
+         'timings': {'bakeSeconds': 1.0}}
+    manifest.write_manifest(out / 'manifest.json', m)
+    return m
+
+
+def deliver_q85_tree(tmp_path):
+    """A finished small pyramid plus the manifest that describes it."""
+    out = tmp_path / 'tiles'
+    seed_layers(out)
+    return out, delivered_manifest(out)
+
+
+def snapshot(out):
+    """Bytes and mtimes of every tile, plus the manifest file verbatim."""
+    return ({str(p.relative_to(out)).replace('\\', '/'):
+             (p.stat().st_size, p.stat().st_mtime_ns)
+             for p in sorted(out.rglob('*.jpg'))},
+            (out / 'manifest.json').read_bytes())
+
+
+def _main_on_delivered_tree(tmp_path, monkeypatch, *args):
+    """Run `main()` over a delivered tree with the source and volume gates
+    satisfied, so the encoder guard is the only thing deciding the exit code."""
+    detail = fake_raster(tmp_path / 'detail.tif', count=1)
+    color = fake_raster(tmp_path / 'color.tif', count=4)
+    monkeypatch.setattr(bake, 'check_sources', lambda *a, **kw: [])
+    _stub_volume(monkeypatch, 10 ** 12, [])
+    monkeypatch.setattr(bake, 'SHA_PATH', tmp_path / 'no-raw' / 'sha256.json')
+    monkeypatch.setattr(bake, 'CAPS_PATH', tmp_path / 'no-raw' / 'cap.json')
+    argv(monkeypatch, '--detail', detail, '--color', color, *args)
+
+
+def test_the_command_refuses_a_changed_quality_resume_and_writes_nothing(
+        tmp_path, monkeypatch, capsys):
+    """The reviewer's reproduction, at the CLI: a q85 tree plus `--quality 30`,
+    no --force. Exit 4, nothing written, and the message makes the choice without
+    re-deriving anything."""
+    out, _ = deliver_q85_tree(tmp_path)
+    before = snapshot(out)
+    _main_on_delivered_tree(tmp_path, monkeypatch, '--top', '1', '--layer',
+                            'photo', '--quality', '30', '--out', str(out))
+    assert bake.main() == 4, 'the run accepted a resume it must refuse'
+    err = capsys.readouterr().err
+    assert 'REFUSING' in err, err
+    assert 'layers.photo.quality' in err, err
+    assert '85' in err and '30' in err, 'must name recorded AND requested'
+    assert '--force' in err, 'must name the escape hatch'
+    assert snapshot(out) == before, 'the refusal wrote tiles or the manifest'
+
+
+def test_a_force_run_takes_the_escape_and_leaves_a_consistent_tree(tmp_path,
+                                                                  monkeypatch):
+    """--force is not a warning to ignore: it deletes the layer it bakes, so every
+    tile in it really is encoded at the flags the record then states."""
+    out, _ = deliver_q85_tree(tmp_path)
+    _main_on_delivered_tree(tmp_path, monkeypatch, '--top', '1', '--layer',
+                            'photo', '--quality', '30', '--force',
+                            '--out', str(out))
+    assert bake.main() == 0
+    after = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert after['layers']['photo']['quality'] == 30
+    assert after['layers']['photo']['baked'] == 8
+    assert after['layers']['photo']['derived'] == 2
+    # The layer this run did not bake keeps its own recorded values and says which
+    # bake they came from.
+    assert after['layers']['paper']['quality'] == 85
+    assert after['layers']['paper']['carriedFrom'] == DELIVERED_STAMP
+    # It wrote, so the stamp moves -- the rule `run()` now states, and the rule
+    # `Attribution` shows the user: `generatedAt` dates the pixels.
+    assert after['generatedAt'] != DELIVERED_STAMP
+
+
+def test_the_refusal_is_told_at_planning_time_too(tmp_path, monkeypatch, capsys):
+    """`--dry-run` writes nothing, so it is the command an operator uses to decide
+    whether to start hours of work -- and a resume that is going to refuse at the
+    encoder guard must be refused HERE, not after the JP2 has been open for two
+    hours. Exit 4, the refusal printed, and no tile written."""
+    out, _ = deliver_q85_tree(tmp_path)
+    before = snapshot(out)
+    _main_on_delivered_tree(tmp_path, monkeypatch, '--top', '1', '--layer',
+                            'photo', '--quality', '30', '--dry-run',
+                            '--out', str(out))
+    assert bake.main() == 4, 'a doomed resume was reported as a clean dry run'
+    err = capsys.readouterr().err
+    assert 'REFUSING' in err and '--force' in err, err
+    assert 'dry run: nothing written' not in capsys.readouterr().out
+    assert snapshot(out) == before
+
+
+def test_the_reviewers_own_command_is_refused_by_the_delivered_record():
+    """The reproduction from the review, run against the artifact that is in git:
+    `bake.py --top 7 --layer photo --quality 30` over the delivered q85 tree.
+
+    The guard's only input is `layers.<name>` of the manifest the run is about to
+    overwrite, so the delivered record -- 43,690 photo tiles at quality 85 -- is
+    the checkable fact, and no bake has to run to show the refusal fires.
+    """
+    delivered = json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8'))['layers']
+    lines = bake.encoder_mismatches(delivered, ('photo',), 30, 0.4)
+    assert len(lines) == 1, lines
+    msg = lines[0]
+    assert 'layers.photo.quality' in msg, msg
+    assert '85' in msg and '30' in msg, msg
+    assert '43690' in msg, f'the refusal must count what it would mislabel: {msg}'
+    # The same command with the RECORDED flags is a normal resume.
+    assert bake.encoder_mismatches(delivered, ('photo',), 85, 0.4) == []
+    # A changed --detail-gain is caught by the same guard on the same record.
+    gains = bake.encoder_mismatches(delivered, ('photo',), 85, 0.8)
+    assert len(gains) == 1 and 'detailGain' in gains[0], gains
+    # `ortho` is a layer this run does not write, and it carries no quality field
+    # at all (stream_bake.py publishes counts, not encoder params), so neither the
+    # recorded 85 nor a requested 30 may be attributed to it.
+    assert bake.encoder_mismatches(delivered, ('photo',), 85, 0.4) == []
+
+
+def test_a_matching_resume_is_still_a_resume_and_not_a_refusal(tmp_path,
+                                                               monkeypatch):
+    """The guard must not eat the ordinary case: same flags, no --force, so the
+    children are skipped and only the parents are re-encoded."""
+    out, _ = deliver_q85_tree(tmp_path)
+    before = snapshot(out)[0]
+    _main_on_delivered_tree(tmp_path, monkeypatch, '--top', '1', '--layer',
+                            'photo', '--quality', '85', '--out', str(out))
+    assert bake.main() == 0
+    after = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert after['layers']['photo']['baked'] == 0
+    assert after['layers']['photo']['derived'] == 2
+    tiles_after = snapshot(out)[0]
+    at_L1 = {k: v for k, v in tiles_after.items() if k.split('/')[1] == '1'}
+    before_L1 = {k: v for k, v in before.items() if k.split('/')[1] == '1'}
+    assert at_L1 == before_L1, \
+        'a resume rewrote children it should have skipped'
+    assert {k: v for k, v in tiles_after.items() if k.startswith('paper')} == \
+        {k: v for k, v in before.items() if k.startswith('paper')}, \
+        'a photo-only resume touched the layer it does not own'
+
+
+# --------------------------------------------------------------------------
+# 11. MUST FIX 3 of the 2026-10-09 review: `contract.py`'s px/deg gate cannot
+#     fire. `scripts/contract.py` and `scripts/tests/test_contract.py` are
+#     ANOTHER AGENT'S FILES, so this section reports the defect with fixtures
+#     instead of editing it. The only change made here is in `bake.check_sources`
+#     -- the line that prints the claim to the operator -- which this file owns.
+# --------------------------------------------------------------------------
+
+# The shape of EXPECTED_DETAIL / EXPECTED_COLOR at a size a test can write: a 2:1
+# global grid of 1024 x 512, i.e. 1024/360 px/deg.
+SMALL_TABLE = {'width': 1024, 'height': 512, 'count': 1, 'dtype': 'uint8',
+               'pxPerDeg': 1024 / 360, 'tol': 1e-6}
+
+
+def half_extent_raster(path, width=1024, height=512, count=1):
+    """Same pixel COUNT, twice the stated pixel SIZE: 1024 px georeferenced across
+    180 deg of longitude, so the file's own claim is 1024/180 px/deg. A real grid
+    error -- and the case the plan table's `pxPerDeg` is quoted as covering."""
+    arr = np.full((height, width, count), 120, np.uint8)
+    t = from_bounds(-180.0, -90.0, 0.0, 90.0, width, height)
+    with rasterio.open(path, 'w', driver='GTiff', width=width, height=height,
+                       count=count, dtype='uint8',
+                       crs=CRS.from_wkt(contract.MOON_WKT), transform=t) as ds:
+        for b in range(count):
+            ds.write(arr[..., b], b + 1)
+    return str(path)
+
+
+def ungridded_raster(path, width=1024, height=512, count=1):
+    """A 2:1 raster with NO georeference, which is `lroc_color_poles.tif`'s exact
+    branch: its IFD0 carries no 33550/33920/33922 keys, so GDAL hands back an
+    identity transform and `read_grid_contract` takes its 'assigned' path."""
+    import warnings
+    arr = np.full((height, width, count), 120, np.uint8)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        with rasterio.open(path, 'w', driver='GTiff', width=width, height=height,
+                           count=count, dtype='uint8') as ds:
+            for b in range(count):
+                ds.write(arr[..., b], b + 1)
+    return str(path)
+
+
+def read_contract(path):
+    """`contract.read_grid_contract` with the expected-noise filter on: reading a
+    file that has no georeference is the POINT of these fixtures, and rasterio's
+    NotGeoreferencedWarning is the correct warning for it."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return contract.read_grid_contract(str(path))
+
+
+def test_the_plans_px_per_deg_gate_cannot_see_the_file_it_is_applied_to(tmp_path):
+    """The finding, proved with fixtures: `read_grid_contract` sets
+    `pxPerDeg = ds.width / 360` (contract.py:88) and `assert_contract` compares
+    `width` EXACTLY (:120-124) BEFORE it compares `pxPerDeg` (:125-129), so the
+    value that branch compares is a restatement of the value that has just
+    passed. It validates the plan table against the plan table.
+
+    If this test goes red on the last two asserts, the gate has become external --
+    that is the fix; delete the xfail marker on the next test, which is the
+    tripwire left for the same change.
+    """
+    full = contract.read_grid_contract(fake_raster(tmp_path / 'full.tif'))
+    half = contract.read_grid_contract(half_extent_raster(tmp_path / 'half.tif'))
+    assert full['pxPerDeg'] == pytest.approx(1024 / 360)
+    assert half['pxPerDeg'] == pytest.approx(1024 / 360), \
+        'the reported px/deg followed the file, not its pixel count'
+    assert half['pxPerDegDeclared'] == pytest.approx(1024 / 180), \
+        'the file does state a different size, and pxPerDeg ignores it'
+    contract.assert_contract(full, SMALL_TABLE)          # the correct grid
+    with pytest.raises(AssertionError) as exc:
+        contract.assert_contract(half, SMALL_TABLE)
+    msg = str(exc.value)
+    assert 'pxPerDegDeclared' in msg, msg
+    assert not msg.startswith('pxPerDeg:'), \
+        'the px/deg branch did not refuse it; the later drift check did'
+
+
+def test_an_ungridded_source_passes_the_px_per_deg_gate_on_an_assigned_value(
+        tmp_path):
+    """The live exposure: the delivered COLOUR source has no georeference, so for
+    it the px/deg gate compares the plan table against a number this pipeline
+    assigned from the pixel count. A mosaic 27360 px wide that only covered half
+    the globe would print the same '76.0000 px/deg' and pass the same way."""
+    c = read_contract(ungridded_raster(tmp_path / 'nogrif.tif'))
+    assert c['gridReadFrom'] == 'assigned'
+    assert c['pxPerDegDeclared'] is None, 'a file that states nothing must not be ' \
+                                         'given a declared pixel size'
+    assert c['pxPerDeg'] == pytest.approx(1024 / 360)
+    assert contract.assert_contract(c, SMALL_TABLE) is None, \
+        'stage 0 accepts it, so the acceptance is the only statement on record'
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    'contract.py:88 canonicalises pxPerDeg to width/360, so the px/deg branch at '
+    ':125-129 holds no information about the file and records nothing about having '
+    'assigned the value itself. The fix recommended in task-bake-semantics-report.'
+    'md makes the record say whether the pixel size was READ or ASSIGNED; when it '
+    'does, this test XPASSes and the suite stops -- delete the marker then.'))
+def test_the_grid_record_says_whether_the_pixel_size_was_read_or_assumed(tmp_path):
+    """What stage 0 has to be able to tell the operator: this file states a
+    resolution, versus this file states nothing and we assigned one."""
+    read = contract.read_grid_contract(fake_raster(tmp_path / 'g.tif'))
+    assigned = contract.read_grid_contract(ungridded_raster(tmp_path / 'a.tif'))
+    assert read['pxPerDegVerified'] is True
+    assert assigned['pxPerDegVerified'] is False, \
+        'an assigned pxPerDeg is published as a verified match'
+
+
+def test_stage_zero_prints_an_assigned_resolution_as_assigned(tmp_path,
+                                                              monkeypatch,
+                                                              capsys):
+    """The half of the finding that lives in `bake.py`, which this agent owns.
+    `check_sources` used to print `{px/deg:.4f} px/deg from assigned` behind the
+    same 'OK' as a measured source, so the operator's only record of the colour
+    TIFF's resolution read as a verification of something nobody could verify."""
+    for key, value in (('width', 1024), ('height', 512),
+                       ('pxPerDeg', 1024 / 360)):
+        monkeypatch.setitem(contract.EXPECTED_DETAIL, key, value)
+        monkeypatch.setitem(contract.EXPECTED_COLOR, key, value)
+    # The real pair: a 1-band gridded detail source and a 4-band COLOUR source
+    # with no georeference, which is what `lroc_color_poles.tif` actually is.
+    gridded = fake_raster(tmp_path / 'gridded.tif', count=1)
+    ungridded4 = ungridded_raster(tmp_path / 'ungridded4.tif', count=4)
+    recs = bake.check_sources(gridded, ungridded4)
+    assert len(recs) == 2
+    out = capsys.readouterr().out
+    assert 'ASSIGNED' in out, out
+    assert 'not verified' in out, out
+    assert 'checked against it' in out, \
+        'the gridded branch must still say the file was checked'

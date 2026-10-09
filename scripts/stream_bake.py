@@ -814,7 +814,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument('--only', metavar='REGION-ID',
                     help='bake one region id only.\n'
                          'This exists so the first real run can be the 22-tile\n'
-                         'apollo-11 site box rather than the whole 7,132-tile plan:\n'
+                         'apollo-11 site box rather than the whole 7,106-tile plan:\n'
                          '--only apollo-11')
     ap.add_argument('--quality', type=int, default=DEFAULT_QUALITY,
                     help='JPEG quality handed to bake.save_tile')

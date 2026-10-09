@@ -5,6 +5,14 @@ Nothing here touches the network: the point of computing regions in Python first
 is that the *cost* of the deep bake is known before anyone spends a byte of
 bandwidth, and `tile_count` is what the plan's "about 15,500 tiles" claim becomes.
 
+A region's COST is a union, never a sum. `tile_count` answers "what does this one
+region cost", and regions overlap: Apollo 15's site box lies inside Rima Hadley's.
+Summing per-region counts over the plan charged the shared tiles once per region and
+shipped 7,132 tiles for a 7,106-tile plan, so `cost` now reads the distinct tile sets
+from `distinct_tiles_by_level`, keeps `perRegion` as the per-region truth it is, and
+states the gap as `cost.overlap`. The other half is `merge`: each level's rectangle
+block is a non-overlapping cover, and `main` refuses to write a plan where it is not.
+
 Two rules learned the hard way from the gazetteer this module reads:
 
 * A polar feature's bbox is not a region. Shackleton is 20.9 km across and its
@@ -168,9 +176,10 @@ def _x(lon: float, cols: int) -> int:
     return min(max(int((lon + 180.0) / 360.0 * cols), 0), cols - 1)
 
 
-def merge(ranges):
-    """Coalesce tile ranges that share a y band and touch or overlap in x, so the
-    manifest carries a few rectangles per level instead of a tile list."""
+def _band_merge(ranges):
+    """Pass 1 of `merge`: coalesce ranges that share an identical y band and touch or
+    overlap in x, so the manifest carries a few rectangles per level instead of a
+    tile list."""
     by_band: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for x0, x1, y0, y1 in ranges:
         by_band.setdefault((y0, y1), []).append((x0, x1))
@@ -182,6 +191,69 @@ def merge(ranges):
             else:
                 out.append([y0, y1, x0, x1])
     return [[x0, x1, y0, y1] for y0, y1, x0, x1 in out]
+
+
+def _subtract(a, b):
+    """The parts of `a` that `b` does not cover, as up to four disjoint rectangles:
+    the columns left of `b`, the columns right of it, and the two strips above and
+    below the overlap. `a` untouched when the two never met, nothing at all when `a`
+    sits inside `b` -- which is the absorption pass 1 could not do."""
+    ax0, ax1, ay0, ay1 = a
+    bx0, bx1, by0, by1 = b
+    if ax1 < bx0 or bx1 < ax0 or ay1 < by0 or by1 < ay0:
+        return [list(a)]
+    out = []
+    if ax0 <= bx0 - 1:
+        out.append([ax0, bx0 - 1, ay0, ay1])
+    if bx1 + 1 <= ax1:
+        out.append([bx1 + 1, ax1, ay0, ay1])
+    mx0, mx1 = max(ax0, bx0), min(ax1, bx1)
+    if ay0 <= by0 - 1:
+        out.append([mx0, mx1, ay0, by0 - 1])
+    if by1 + 1 <= ay1:
+        out.append([mx0, mx1, by1 + 1, ay1])
+    return out
+
+
+def _disjoint_cover(rects):
+    """Pass 2: resolve the overlaps pass 1 leaves -- nested rectangles, and
+    rectangles whose y bands cross without being identical -- into rectangles that
+    cover exactly the same tiles and share none.
+
+    The largest rectangle claims its space first (area, then row, then column, so the
+    answer is a property of the geometry and not of the order the regions were
+    iterated), and every other rectangle is cut by it. Nothing is emitted until every
+    already-emitted rectangle has been subtracted from it, so no two outputs can
+    name the same tile; nothing is dropped, so the tile set is preserved. Both facts
+    are what `availability` is read for: see `distinct_tiles_by_level`."""
+    remaining = [list(r) for r in rects]
+    out: list[list[int]] = []
+    while remaining:
+        remaining.sort(key=lambda r: (-_area(r), r[2], r[0]))
+        claim = remaining.pop(0)
+        out.append(claim)
+        remaining = [piece for r in remaining
+                     for piece in _subtract(r, claim)]
+    return sorted(out, key=lambda r: (r[2], r[0]))
+
+
+def merge(ranges):
+    """A non-overlapping cover of `ranges`, as `[x0, x1, y0, y1]` inclusive bounds
+    sorted by row then column.
+
+    Two passes: `_band_merge` coalesces ranges that share a y band and touch in x, so
+    a wide box stays one rectangle and a region's own antimeridian pair stays TWO --
+    the gap between the two halves of a seam box is real, and merging across it would
+    promise a whole row of tiles nothing asked for. `_disjoint_cover` then handles
+    what a band key cannot: rectangles sharing no y band at all.
+
+    The guarantee is `sum(_area(r) for r in merge(rs)) == len(tiles(rs))`, which
+    `test_disk_guard` has always pinned for the delivered manifest and
+    `test_regions` now pins for the plan. Before pass 2 existed, a plan whose L8 block
+    held `[258,262,89,93]` *and* `[260,261,90,91]` inside it was not a cover, and the
+    cost summed from it double-counted.
+    """
+    return _disjoint_cover(_band_merge(ranges))
 
 
 def levels_of(region):
@@ -198,12 +270,40 @@ def _area(r) -> int:
 
 
 def availability(regions) -> dict:
-    """{level: [x0, x1, y0, y1, ...]} merged across every region at that level."""
+    """{level: [x0, x1, y0, y1, ...]} merged across every region at that level.
+
+    Each level's block is a NON-OVERLAPPING cover: every tile any region reaches at
+    that level is named exactly once, so the block's own area is the plan's cost at
+    that level and `cost.tilesPerLevel` can be read off it. `merge` is what makes
+    that true, and `main` refuses to write a plan where it is not."""
     per_level: dict[int, list] = {}
     for reg in regions:
         for L in levels_of(reg):
             per_level.setdefault(L, []).extend(tile_ranges(box_of(reg), L))
     return {str(L): merge(rs) for L, rs in sorted(per_level.items())}
+
+
+def distinct_tiles_by_level(regions) -> dict[int, set]:
+    """{level: every (x, y) tile any region reaches at that level}, counted once.
+
+    A set rather than a sum, because `tile_count` is per region by construction and
+    adding it over regions charges a shared tile once per region. That is how the
+    shipped plan came to state 7,132 tiles for the 7,106 it covers: Apollo 15's
+    0.5 deg site box lies inside Rima Hadley's 3 deg box and shares 26 tiles with it
+    (4 at L8, 6 at L9, 16 at L10). This is the function that cannot make that
+    mistake, so `cost` is read from it and the per-region total is reported beside it
+    as `cost.overlap` rather than quietly added to it.
+
+    The sets are bounded by the plan's own tile count -- the number under test -- so
+    this costs no more than the rectangles `availability` returns."""
+    reached: dict[int, set] = {}
+    for reg in regions:
+        for L in levels_of(reg):
+            at = reached.setdefault(L, set())
+            for x0, x1, y0, y1 in tile_ranges(box_of(reg), L):
+                at.update((x, y) for x in range(x0, x1 + 1)
+                          for y in range(y0, y1 + 1))
+    return reached
 
 
 def median_centre(points):
@@ -310,7 +410,21 @@ def main() -> int:
     records = labels.load_records(str(zip_path))
     regs = curated(records)
     avail = availability(regs)
-    total = sum(tile_count(r) for r in regs)
+    per_region = {r['id']: tile_count(r) for r in regs}
+    union = distinct_tiles_by_level(regs)
+    tiles_per_level = {str(L): len(at) for L, at in sorted(union.items())}
+    distinct = sum(tiles_per_level.values())
+    # The plan is the artifact every future cost estimate is read from, so it does
+    # not get to state a number its own rectangles contradict: an availability block
+    # whose areas add up to more than the tiles it names is a block that double-counts.
+    for level, rects in avail.items():
+        claimed = sum(_area(r) for r in rects)
+        if claimed != tiles_per_level[level]:
+            raise AssertionError(
+                f'L{level}: the merged block names {tiles_per_level[level]} distinct '
+                f'tiles but its {len(rects)} rectangles add up to {claimed}. merge() '
+                f'is no longer a non-overlapping cover, so the plan cannot state a '
+                f'cost.')
     data = {
         'schema': 1,
         'grid': {'tileSize': grid.TILE, 'yOrigin': 'north',
@@ -318,21 +432,26 @@ def main() -> int:
                  'radiusMeters': grid.MOON_RADIUS_M},
         'regions': regs,
         'availability': avail,
-        'cost': {'tiles': total,
-                 'perRegion': {r['id']: tile_count(r) for r in regs},
-                 'tilesPerLevel': {L: sum(_area(r) for r in rs)
-                                   for L, rs in avail.items()},
-                 'note': ('availability is the PLAN. What the app may request is '
-                          'derived from the tiles actually on disk, the same way '
+        'cost': {'tiles': distinct,
+                 'overlap': sum(per_region.values()) - distinct,
+                 'perRegion': per_region,
+                 'tilesPerLevel': tiles_per_level,
+                 'note': ('tiles and tilesPerLevel are the DISTINCT UNION of the '
+                          'region boxes: availability is a non-overlapping cover per '
+                          'level, so a tile two regions share is charged once. '
+                          'perRegion is each region on its own and therefore sums to '
+                          'more; overlap is the difference, named instead of hidden '
+                          '(Apollo 15 inside Rima Hadley). What the app may request '
+                          'is derived from the tiles actually on disk, the same way '
                           'manifest.baked_levels asks the filesystem.')},
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_bytes((json.dumps(data, indent=1, ensure_ascii=False) + '\n')
                     .encode('utf-8'))
-    print(f'{len(regs)} regions, {total} tiles planned, '
-          f'{len(avail)} levels')
-    for rid, n in sorted(data['cost']['perRegion'].items(),
-                         key=lambda kv: -kv[1]):
+    print(f'{len(regs)} regions, {distinct} tiles planned '
+          f'({sum(per_region.values())} counted per region, '
+          f'{data["cost"]["overlap"]} shared), {len(avail)} levels')
+    for rid, n in sorted(per_region.items(), key=lambda kv: -kv[1]):
         print(f'  {rid:16} {n:6d} tiles')
     print(f'wrote {OUT} ({OUT.stat().st_size} bytes)')
     return 0

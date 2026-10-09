@@ -32,6 +32,20 @@ def read_tile(path: Path) -> np.ndarray:
 
 def derive_levels(out_dir, layer: str, top: int, quality: int,
                   save_tile) -> int:
+    """Re-encode every parent from the children currently on disk.
+
+    `save_tile` is called with force=True on purpose: a parent is not source
+    data, it is a function of its children, so whenever the children exist the
+    parent has to match them rather than whatever it was last written as.
+
+    The consequence, which the 2026-10-09 review measured: on a resume this
+    re-encodes ALL parents while `save_tile`'s existence test keeps every
+    top-level child, so the two halves of the tree are encoded by different
+    runs. That is only safe while the two encoders agree, and the only thing in
+    this pipeline that makes them agree is `bake.check_encoder_params`, which
+    refuses a resume whose `quality`/`detailGain` differ from the delivered
+    record. Do not weaken that guard from here.
+    """
     out = Path(out_dir) / layer
     written = 0
     for L in range(top, 0, -1):

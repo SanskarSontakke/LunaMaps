@@ -234,12 +234,6 @@
     93
    ],
    [
-    260,
-    261,
-    90,
-    91
-   ],
-   [
     186,
     190,
     92,
@@ -306,12 +300,6 @@
     524,
     178,
     187
-   ],
-   [
-    521,
-    523,
-    181,
-    182
    ],
    [
     373,
@@ -382,12 +370,6 @@
     374
    ],
    [
-    1043,
-    1046,
-    362,
-    365
-   ],
-   [
     746,
     760,
     369,
@@ -444,7 +426,8 @@
   ]
  },
  "cost": {
-  "tiles": 7132,
+  "tiles": 7106,
+  "overlap": 26,
   "perRegion": {
    "apollo-11": 22,
    "apollo-12": 29,
@@ -460,10 +443,10 @@
    "mare-orientale": 4430
   },
   "tilesPerLevel": {
-   "8": 394,
-   "9": 1410,
-   "10": 5328
+   "8": 390,
+   "9": 1404,
+   "10": 5312
   },
-  "note": "availability is the PLAN. What the app may request is derived from the tiles actually on disk, the same way manifest.baked_levels asks the filesystem."
+  "note": "tiles and tilesPerLevel are the DISTINCT UNION of the region boxes: availability is a non-overlapping cover per level, so a tile two regions share is charged once. perRegion is each region on its own and therefore sums to more; overlap is the difference, named instead of hidden (Apollo 15 inside Rima Hadley). What the app may request is derived from the tiles actually on disk, the same way manifest.baked_levels asks the filesystem."
  }
 }

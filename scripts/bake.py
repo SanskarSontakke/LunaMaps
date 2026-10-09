@@ -17,6 +17,21 @@ should never have started:
     children) are counted separately. A resume bakes 0 tiles and re-encodes
     every parent; conflating those two printed a resume as if it had done work.
 
+The 2026-10-09 whole-branch review added two more, both for the same reason: a
+run must never publish a record that is false of the pixels it delivered.
+
+  * a resume is checked against the ENCODER PARAMETERS the delivered record says
+    produced the tree (`check_encoder_params`). `save_tile` skips a tile when the
+    file EXISTS, not when it exists with the parameters this run asks for, and
+    `derive.derive_levels` re-encodes every parent, so `--top 7 --layer photo
+    --quality 30` over the q85 tree would keep 32,768 children at q85, re-encode
+    10,922 parents at q30, and publish `quality = 30`. That run now refuses,
+    naming the recorded value, the requested value, and `--force` as the escape.
+  * `generatedAt` dates the PIXELS, not the rewrite: a run that wrote no tile
+    carries the delivered stamp rather than re-dating 87,380 files it never
+    touched, which is the rule `--reindex` already follows because `Attribution`
+    shows that field to the user as the bake date.
+
 Everything time- and byte-related here is anchored to measurements recorded in
 docs/superpowers/specs/bake-log.md, not to the spec's original estimates.
 """
@@ -97,6 +112,106 @@ class SourceError(RuntimeError):
     """
 
 
+class EncoderMismatchError(RuntimeError):
+    """This run's encoder flags are not the ones that produced the tiles a resume
+    would keep, so publishing them would mislabel the delivered tree.
+
+    The hole the 2026-10-09 whole-branch review measured: `save_tile` skips a
+    tile when the FILE exists, not when the file exists *with the parameters this
+    run is asking for*, and `derive.derive_levels` re-encodes every parent
+    unconditionally. So `bake.py --top 7 --layer photo --quality 30` over the
+    delivered q85 tree keeps all 32,768 L7 children at q85, re-encodes the
+    10,922 derived parents at q30, and writes `layers.photo.quality = 30`: one
+    number describing a tree holding two. `quality` is not a label -- the same
+    pixels measure 165,079 B at q85 and 83,555 B at q30 -- so no re-labeling can
+    make the artifact true. The only honest answer is to refuse and name --force.
+    """
+
+
+def requested_encoder_params(layer: str, quality: int, k) -> dict:
+    """What this run's flags say the pixels are, for the layer it is writing.
+
+    `paper` is the raw detail band, so it has no detail gain whatever `--k` says;
+    claiming one would refuse a paper resume for a parameter that cannot change
+    its pixels (see `test_a_paper_resume_is_not_refused_for_the_photos_detail_gain`).
+    """
+    return {'quality': quality,
+            'detailGain': None if layer == 'paper' else k}
+
+
+def _encoder_values_differ(have, want) -> bool:
+    """Float-tolerant on purpose: `0.4` round-trips through JSON and CLI args, and
+    a binary `!=` would refuse a run whose flags are the recorded ones."""
+    if have is None or want is None:
+        return have is not want
+    try:
+        return abs(float(have) - float(want)) > 1e-9
+    except (TypeError, ValueError):
+        return have != want
+
+
+def _fmt_param(v) -> str:
+    return 'not set' if v is None else repr(v)
+
+
+def encoder_mismatches(prev_layers: dict, layers, quality: int, k) -> list[str]:
+    """One line per recorded parameter this run contradicts, naming both values.
+
+    Only the layers THIS run writes are considered: an unbaked layer's tiles are
+    neither skipped-and-mislabelled nor re-encoded here, and its own record is
+    carried with its own values, so it is not evidence about this run's flags.
+
+    Only a value the record ACTUALLY STATES can be contradicted: `quality: null`
+    is a state a `--reindex` of a tree that never recorded one can leave behind,
+    and refusing on it would block a resume because the artifact admits it does
+    not know. A run that asks for no detail gain over a tree recorded WITH one is
+    the opposite case -- the record states 0.4, this run states none -- and is a
+    real mismatch, so `want is None` still counts.
+    """
+    lines = []
+    for layer in layers:
+        rec = prev_layers.get(layer) or {}
+        if not rec:
+            continue
+        for key, want in requested_encoder_params(layer, quality, k).items():
+            have = rec.get(key)
+            if key not in rec or have is None:
+                continue
+            if _encoder_values_differ(have, want):
+                lines.append(
+                    f'layers.{layer}.{key}: the delivered record says '
+                    f'{_fmt_param(have)}, this run asks for {_fmt_param(want)}, '
+                    f'and {rec.get("tiles", "the existing")} {layer} tiles on '
+                    f'disk keep {_fmt_param(have)}')
+    return lines
+
+
+def check_encoder_params(prev_layers: dict, layers, quality: int, k,
+                         force: bool) -> None:
+    """Refuse a resume whose encoder flags differ from the recorded ones.
+
+    Runs BEFORE the first write and before the first `--force` delete would be
+    needed, so a refusal leaves the delivered tree byte-for-byte as it found it.
+    """
+    if force:
+        return
+    lines = encoder_mismatches(prev_layers, layers, quality, k)
+    if not lines:
+        return
+    raise EncoderMismatchError('\n'.join([
+        "REFUSING TO RESUME: this run's encoder flags are not the ones that "
+        'produced the tiles that are already on disk.',
+        *[f'  {line}' for line in lines],
+        '  A resume SKIPS the files it finds (`save_tile` tests existence, not '
+        'parameters) while every derived parent is re-encoded, so the manifest '
+        'this run publishes would state one value for a tree holding two -- and '
+        'quality changes the bytes, not just the label.',
+        '  Either re-run with the recorded flags, or pass --force, which deletes '
+        'the layer it is about to bake and re-bakes all of it at the flags given '
+        'here so the record it writes is true of every tile in the tree.',
+    ]))
+
+
 def validate_band_rows(band_rows: int) -> None:
     """`--band-rows 0` used to die inside `range()`; a negative value used to
     bake nothing at all and still return success. Both are argument errors."""
@@ -134,8 +249,23 @@ def check_sources(detail: str, color: str, quiet: bool = False) -> list[dict]:
             continue
         records.append(c)
         if not quiet:
-            print(f'  {p.name}: OK {c["width"]}x{c["height"]} '
-                  f'{c["pxPerDeg"]:.4f} px/deg from {c["gridReadFrom"]}')
+            # The pixel size a source does not state cannot be verified, so it
+            # must not be printed as if it were: `read_grid_contract` sets
+            # `pxPerDeg = width/360` (contract.py:88), which for an ungridded file
+            # -- exactly the delivered colour TIFF's case -- is a value this
+            # pipeline ASSIGNED from the pixel count. The stage 0 log is the only
+            # place a human reads whether the grid was measured or assumed.
+            if c['gridReadFrom'] == 'assigned':
+                print(f'  {p.name}: OK {c["width"]}x{c["height"]}, '
+                      f'{c["pxPerDeg"]:.4f} px/deg ASSIGNED from width/360 -- '
+                      f'this file carries no georeference, so its resolution was '
+                      f'not read and is not verified here (only its pixel count '
+                      f'and its 2:1 aspect are)')
+            else:
+                print(f'  {p.name}: OK {c["width"]}x{c["height"]}, grid '
+                      f'{c["pxPerDeg"]:.4f} px/deg (canonical width/360); the '
+                      f'file states {c["pxPerDegDeclared"]:.4f} px/deg and was '
+                      f'checked against it')
     if problems:
         for line in problems:
             print(f'  {line}', file=sys.stderr)
@@ -276,6 +406,14 @@ def read_world_rows(ds, L: int, wr0: int, wr1: int, indexes, resampling: str):
 
 def save_tile(out_dir, layer: str, L: int, x: int, y: int, arr, quality: int,
               force: bool) -> bool:
+    """Write one tile, unless it already exists and `--force` was not given.
+
+    Existence is the whole of the resume test -- the `quality` this call would
+    encode at is NOT compared against the quality the existing file was encoded
+    at, and JPEG does not carry a quality field back. That is why
+    `check_encoder_params` refuses a changed-flag resume up front instead of
+    letting this line quietly keep the old file.
+    """
     d = Path(out_dir) / layer / str(L) / str(x)
     p = d / f'{y}.jpg'
     if p.exists() and not force:
@@ -421,6 +559,15 @@ def run(detail: str, color: str, layers=PRODUCT_LAYERS, top: int = 6,
     """Bake and derive the pyramid, then write the manifest. Returns the number
     of tiles this call wrote (baked + re-derived), nothing more.
 
+    Two rules decide what the call may say when it finishes:
+
+      * it refuses (`EncoderMismatchError`, nothing written) when its `quality` or
+        detail gain contradicts the `layers.<name>` record of the tree it is
+        resuming, because a resume keeps the files it finds;
+      * `generatedAt` is carried when this call wrote 0 tiles and restamped when
+        it wrote any, because the stamp dates the pixels and `Attribution` shows
+        it to the user as the bake date.
+
     The Stage 0 grid-contract gate lives in `main()`, in front of this call,
     which is what a real bake runs; `run()` itself stays usable against the
     1024x512 synthetic rasters in scripts/tests, which could never satisfy the
@@ -434,6 +581,13 @@ def run(detail: str, color: str, layers=PRODUCT_LAYERS, top: int = 6,
     mp = out / 'manifest.json'
     prev_manifest = json.loads(mp.read_text(encoding='utf-8')) if mp.exists() else {}
     prev_layers = prev_manifest.get('layers', {})
+    # MUST FIX 1 (2026-10-09 review): refuse a resume whose encoder flags are not
+    # the ones that produced the files it is about to skip, BEFORE the first byte
+    # is written and before the first parent is re-encoded. `quality` and
+    # `detailGain` are the two flags that change pixels, and both are recorded in
+    # `layers.<name>`, so the delivered artifact itself says whether this run can
+    # describe it.
+    check_encoder_params(prev_layers, layers, quality, k, force)
     t0 = time.time()
     baked = derived = 0
     counts: dict[str, tuple[int, int]] = {}
@@ -457,7 +611,17 @@ def run(detail: str, color: str, layers=PRODUCT_LAYERS, top: int = 6,
                 print(f'{layer}: {n_derived} parent tiles derived '
                       f'L{top-1}..L0')
     m = manifest_mod.base_manifest(manifest_mod.baked_levels(
-        out, layers + carried_layers(out, layers)))
+        out, layers + carried_layers(out, layers)),
+        # MUST FIX 2 (2026-10-09 review) -- THE RULE, stated once:
+        # `generatedAt` dates the PIXELS, not the moment the record was rewritten.
+        # A run that wrote nothing changed no pixel, so it carries the delivered
+        # stamp; a run that wrote any tile -- children, parents, or a --force
+        # re-bake -- changed the artifact, so it restamps. `Attribution` renders
+        # this field to the user as "the bake date", and `reindex()` already
+        # carries it for exactly that reason; before this, a resume that baked 0
+        # tiles re-dated 87,380 files it never touched.
+        generated_at=(prev_manifest.get('generatedAt')
+                      if (prev_manifest and not (baked or derived)) else None))
     for layer in layers:
         m['layers'][layer] = layer_record(
             out, layer, quality, None if layer == 'paper' else k, top,
@@ -603,6 +767,21 @@ def main() -> int:
               'listed above before running this again.', file=sys.stderr)
         return 2
 
+    # The same refusal `run()` is about to make, told at PLANNING time: a resume
+    # that is going to stop at the encoder guard must not be started to discover
+    # it, because "started" here is a multi-hour read of a 3.04 GB JP2. Cheap
+    # (one small JSON read) and it is the only guard here that a --dry-run can
+    # answer at all, since a dry run writes nothing.
+    delivered = Path(a.out) / 'manifest.json'
+    prev_layers = (json.loads(delivered.read_text(encoding='utf-8'))
+                   .get('layers', {}) if delivered.exists() else {})
+    try:
+        check_encoder_params(prev_layers, layers, a.quality,
+                             None if a.no_detail else a.k, a.force)
+    except EncoderMismatchError as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+
     if a.dry_run:
         print('dry run: nothing written')
         return 0
@@ -613,9 +792,17 @@ def main() -> int:
               file=sys.stderr)
         return 3
 
-    run(detail=a.detail, color=a.color, layers=layers, top=a.top,
-        quality=a.quality, band_rows=a.band_rows,
-        k=None if a.no_detail else a.k, out_dir=a.out, force=a.force)
+    try:
+        run(detail=a.detail, color=a.color, layers=layers, top=a.top,
+            quality=a.quality, band_rows=a.band_rows,
+            k=None if a.no_detail else a.k, out_dir=a.out, force=a.force)
+    except EncoderMismatchError as exc:
+        # Exit 4, and nothing written: the tree that is on disk is still exactly
+        # the tree the delivered record describes. `main()` catches rather than
+        # letting the traceback through because the message IS the decision --
+        # it names the recorded value, the requested value and the --force escape.
+        print(str(exc), file=sys.stderr)
+        return 4
     return 0
 
 

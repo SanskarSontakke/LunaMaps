@@ -7,6 +7,7 @@ before anyone spends a byte of bandwidth on it.
 from __future__ import annotations
 
 import json
+import random
 import sys
 from pathlib import Path
 
@@ -18,11 +19,32 @@ import labels   # noqa: E402
 import regions  # noqa: E402
 
 FIX = 'tests/fixtures/moon_nomenclature_fixture.zip'
+SHIPPED_PLAN = Path(__file__).resolve().parents[2] / 'public' / 'data' / 'regions.json'
+# The delivered deep-zoom tree. Gitignored with only the manifest force-added, so a
+# fresh clone has the plan and none of the tiles; the test that reads it skips there
+# for the same reason `test_disk_guard` skips it.
+ORTHO_TREE = SHIPPED_PLAN.parents[1] / 'tiles' / 'ortho'
 
 
 @pytest.fixture(scope='module')
 def records():
     return labels.load_records(FIX)
+
+
+def _tiles(ranges) -> set:
+    """Every (x, y) a list of `[x0, x1, y0, y1]` rectangles names, as a SET.
+
+    The set is the oracle: a rectangle that repeats a tile another rectangle already
+    covers shrinks the difference between `len(_tiles(...))` and `_area(...)`, which
+    is the one measurement that distinguishes a *cover* from a *list of boxes*.
+    """
+    return {(x, y) for x0, x1, y0, y1 in ranges
+            for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)}
+
+
+def _area(ranges) -> int:
+    """What the rectangles add up to if each is believed to cover new tiles."""
+    return sum((x1 - x0 + 1) * (y1 - y0 + 1) for x0, x1, y0, y1 in ranges)
 
 
 # --- tile_ranges: hand-computed against the grid, not against the code --------
@@ -90,6 +112,80 @@ def test_different_y_bands_are_never_merged():
     assert m == [[0, 3, 0, 0], [0, 3, 1, 1]]
 
 
+def test_the_output_is_ordered_by_row_then_column():
+    """`availability` is a published artifact and a diff waiting to happen: the
+    order has to be a property of the geometry, not of the dict iteration that fed
+    it, so re-running the generator cannot reshuffle the block."""
+    m = regions.merge([[7, 9, 4, 4], [0, 2, 1, 1], [3, 5, 1, 1], [0, 1, 0, 0]])
+    assert m == sorted(m, key=lambda r: (r[2], r[0]))
+
+
+# --- the guarantee: a cover, not a list of boxes ------------------------------
+#
+# `merge` has always coalesced ranges that share a y band. What it did NOT do,
+# until these tests existed, is anything about ranges that do not: a rectangle
+# nested inside another, or two boxes whose y bands cross, came out both counted
+# in full. That is how the shipped plan came to state 7,132 tiles for a plan whose
+# distinct union is 7,106 -- Apollo 15's site box sits inside Rima Hadley's and
+# `cost` summed them per region.
+
+
+def test_a_rectangle_nested_inside_another_is_absorbed():
+    """The shipped defect, in the exact numbers it shipped at L8: `[260, 261, 90,
+    91]` (Apollo 15) lies wholly inside `[258, 262, 89, 93]` (Rima Hadley), and a
+    block that is supposed to be a cover cannot name those 4 tiles twice."""
+    assert regions.merge([[258, 262, 89, 93], [260, 261, 90, 91]]) == \
+        [[258, 262, 89, 93]]
+    # and input order must not matter -- the larger box owns the space either way
+    assert regions.merge([[260, 261, 90, 91], [258, 262, 89, 93]]) == \
+        [[258, 262, 89, 93]]
+
+
+def test_boxes_that_overlap_across_different_y_bands_still_cover_each_tile_once():
+    """A band-keyed merge cannot fix this case: the two y bands differ, so the
+    overlap is in neither band's interval union. The remainder is trimmed into
+    rectangles that are disjoint from the box that got there first."""
+    overlap = regions.merge([[0, 10, 0, 10], [5, 15, 5, 15]])
+    assert _area(overlap) == len(_tiles(overlap)), overlap
+    assert _tiles(overlap) == _tiles([[0, 10, 0, 10], [5, 15, 5, 15]]), \
+        'a cover must promise exactly the same tiles it did before'
+
+
+@pytest.mark.parametrize('seed', [7, 2026])
+def test_the_cover_holds_for_boxes_nobody_hand_picked(seed):
+    """The property, not the three examples: for any pile of rectangles, `merge`
+    returns the same tile set and no tile twice.
+
+    Seeded and small so the run is deterministic and fast. A fixed seed is not the
+    same as a hand-picked example: the cases above are the overlaps the shipped plan
+    actually grew, and this is what an overlap it has not grown yet would do."""
+    rng = random.Random(seed)
+    for _ in range(200):
+        rs = []
+        for _ in range(rng.randint(1, 6)):
+            x0, y0 = rng.randint(0, 24), rng.randint(0, 24)
+            rs.append([x0, x0 + rng.randint(0, 8), y0, y0 + rng.randint(0, 8)])
+        merged = regions.merge([list(r) for r in rs])
+        assert _tiles(merged) == _tiles(rs), (rs, merged)
+        assert _area(merged) == len(_tiles(merged)), (rs, merged)
+        assert merged == sorted(merged, key=lambda r: (r[2], r[0]))
+        for x0, x1, y0, y1 in merged:
+            assert x0 <= x1 and y0 <= y1, merged
+
+
+def test_the_antimeridian_two_range_case_survives_the_overlap_pass():
+    """`tile_ranges` returns the seam box as two ranges, one at each edge of the
+    row. The gap between them is real water (well: real globe), so the overlap pass
+    must not collapse the pair into `[0, cols-1]`."""
+    cols = grid.level_cols(10)
+    rs = regions.tile_ranges([179.5, -0.5, -179.5, 0.5], 10)
+    assert len(rs) == 2
+    merged = regions.merge(rs)
+    assert len(merged) == 2
+    assert merged[1][1] == cols - 1 and merged[0][0] == 0
+    assert _area(merged) == len(_tiles(merged))
+
+
 def test_availability_merges_every_region_at_a_level():
     regs = [
         {'box': [23.0, 0.0, 24.0, 1.0], 'minLevel': 10, 'maxLevel': 10},
@@ -100,6 +196,30 @@ def test_availability_merges_every_region_at_a_level():
     # set is smaller than the sum of the two -- which is the whole reason the
     # manifest carries ranges instead of tile lists.
     assert sum((x1 - x0 + 1) * (y1 - y0 + 1) for x0, x1, y0, y1 in at10) < 2 * 49
+
+
+def test_two_overlapping_boxes_merge_to_a_cover_smaller_than_their_sum():
+    """The plan-level statement of the same rule, through `availability` and real
+    boxes rather than hand-written rectangles: overlapping regions must cost their
+    union, while `tile_count` stays the per-region figure it has always been."""
+    regs = [
+        {'box': [0.0, 0.0, 4.0, 4.0], 'minLevel': 10, 'maxLevel': 10},
+        {'box': [2.0, 2.0, 6.0, 6.0], 'minLevel': 10, 'maxLevel': 10},
+    ]
+    block = regions.availability(regs)['10']
+    per_region = sum(regions.tile_count(r) for r in regs)
+    assert _area(block) == len(_tiles(block)), 'a level block must be a cover'
+    assert len(_tiles(block)) < per_region, \
+        'two boxes sharing a corner must not cost a whole box twice'
+
+
+def test_a_box_inside_another_adds_no_tiles_to_its_level_block():
+    big = {'box': [0.0, 0.0, 6.0, 6.0], 'minLevel': 10, 'maxLevel': 10}
+    small = {'box': [2.0, 2.0, 3.0, 3.0], 'minLevel': 10, 'maxLevel': 10}
+    alone = regions.availability([big])['10']
+    both = regions.availability([big, small])['10']
+    assert both == alone, 'the inner box is absorbed by the outer one, entirely'
+    assert _area(both) == len(_tiles(both))
 
 
 # --- the curated set: what actually ships ------------------------------------
@@ -219,6 +339,98 @@ def test_main_writes_a_manifest_shaped_regions_file(tmp_path, monkeypatch,
         for x0, x1, y0, y1 in rng:
             assert 0 <= x0 <= x1 <= grid.level_cols(int(level)) - 1
             assert 0 <= y0 <= y1 <= grid.level_rows(int(level)) - 1
+
+
+def test_main_costs_the_distinct_union_and_names_the_overlap(tmp_path, monkeypatch,
+                                                             records):
+    """The writer, not just the artifact: `cost.tiles` is what a future estimate is
+    read from, so it must be the union of the region boxes rather than the sum of
+    their per-region counts -- and the gap between the two must be stated, because
+    `perRegion` is kept as the per-region truth it has always been."""
+    monkeypatch.setattr(regions, 'OUT', tmp_path / 'regions.json')
+    assert regions.main() == 0
+    cost = json.loads((tmp_path / 'regions.json').read_text(
+        encoding='utf-8'))['cost']
+    per_region = sum(cost['perRegion'].values())
+    assert cost['tiles'] < per_region, (
+        'the shipped set overlaps (Apollo 15 inside Rima Hadley), so a plan that '
+        'costs the union must be smaller than the sum of its regions')
+    assert cost['overlap'] == per_region - cost['tiles']
+    assert sum(cost['tilesPerLevel'].values()) == cost['tiles']
+
+
+# --- the shipped plan: a cover, and its own arithmetic ------------------------
+
+def _plan():
+    return json.loads(SHIPPED_PLAN.read_text(encoding='utf-8'))
+
+
+def test_the_shipped_plan_rectangles_cover_every_level_exactly_once():
+    """The sibling of `test_disk_guard`'s "availability rectangles tile-cover the
+    tree exactly once", aimed at the PLAN instead of the delivered manifest.
+
+    Nothing pinned this, which is how a plan could advertise 7,132 tiles for the
+    7,106 it actually names: `[258,262,89,93]` and `[260,261,90,91]` sat in the
+    same L8 block, so the block's own area was 4 tiles larger than its tile set at
+    every one of the three levels. A block that double-counts is not a cover, and a
+    cover is the only thing a cost figure can honestly be read off."""
+    plan = _plan()
+    distinct = 0
+    for level, block in sorted(plan['availability'].items(),
+                               key=lambda kv: int(kv[0])):
+        covered = _tiles(block)
+        assert _area(block) == len(covered), \
+            f'L{level}: {len(block)} rectangles name {len(covered)} tiles but ' \
+            f'add up to {_area(block)} -- the block double-counts'
+        assert plan['cost']['tilesPerLevel'][level] == len(covered)
+        distinct += len(covered)
+    assert plan['cost']['tiles'] == distinct, \
+        'cost.tiles must be the union the availability blocks actually cover'
+
+
+def test_the_shipped_plan_names_the_overlap_instead_of_hiding_it():
+    """The three numbers of the 2026-10-09 measurement, pinned rather than
+    re-derived by hand: 7,132 tiles summed per region, 7,106 distinct, and the 26
+    tile difference is Apollo 15's 0.5 deg site box falling inside Rima Hadley's
+    3 deg box (4 at L8, 6 at L9, 16 at L10)."""
+    cost = _plan()['cost']
+    assert sum(cost['perRegion'].values()) == 7_132
+    assert cost['tiles'] == 7_106
+    assert cost['overlap'] == 26
+    assert cost['tiles'] + cost['overlap'] == sum(cost['perRegion'].values())
+
+
+def test_the_shipped_plan_cover_is_the_record_the_app_loads():
+    """The plan and the delivery are two independent measurements of the same set:
+    `public/tiles/manifest.json`'s `ortho.availability` is derived from the files on
+    disk, so a plan whose union disagrees with it is a plan the next bake cannot
+    satisfy -- or one that already over-promised. The tracked manifest is in git even
+    when the tree is not, so this needs no tiles to answer."""
+    plan = _plan()
+    ortho = json.loads((ORTHO_TREE.parents[0] / 'manifest.json').read_text(
+        encoding='utf-8'))['layers']['ortho']
+    assert set(plan['cost']['tilesPerLevel']) == set(ortho['availability'])
+    for level, block in plan['availability'].items():
+        assert _tiles(block) == _tiles(ortho['availability'][level]), \
+            f'L{level}: the plan and the delivered record are not the same tiles'
+    assert plan['cost']['tiles'] == ortho['tiles']
+
+
+@pytest.mark.skipif(not ORTHO_TREE.exists(),
+                    reason='the ortho tree is gitignored; run stream_bake.py to '
+                           'produce it and this test re-derives the count from it')
+def test_the_shipped_plan_promises_exactly_the_jpegs_on_disk():
+    on_disk = {}
+    for p in ORTHO_TREE.rglob('*.jpg'):
+        rel = p.relative_to(ORTHO_TREE)
+        assert len(rel.parts) == 3, f'{rel} is not <level>/<x>/<y>.jpg'
+        on_disk.setdefault(int(rel.parts[0]), set()).add(
+            (int(rel.parts[1]), int(rel.parts[2][:-4])))
+    plan = _plan()
+    assert {int(k) for k in plan['availability']} == set(on_disk)
+    for level, block in plan['availability'].items():
+        assert _tiles(block) == on_disk[int(level)], f'L{level}'
+    assert plan['cost']['tiles'] == sum(len(s) for s in on_disk.values())
 
 
 # --- the manifest schema that carries availability ---------------------------
