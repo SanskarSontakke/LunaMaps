@@ -113,6 +113,20 @@ def albedo_percentiles(out_dir: str, layer: str = 'paper',
             'mean': round(float((np.arange(256) * counts).sum()) / total, 2),
             'p33': _percentile(counts, total, 33),
             'p67': _percentile(counts, total, 67),
+            # The top of the distribution, not just its middle. The `paper` mode's
+            # canvas filter is affine -- contrast(0.72) then brightness(1.55) is
+            # out = 1.116*in + 55.34 -- so anything at DN >= 178.91 clips to pure
+            # white and no later CSS stage can bring it back. Measured over all
+            # 2,048 delivered L5 tiles, 1.606% of `paper` pixels and 15.319% of
+            # `photo` pixels do clip, and `PAPER_BASE_COLOR` itself (239,233,220)
+            # maps to (255,255,255). A retune of those constants has to be checked
+            # against the real top of the histogram rather than against a memory of
+            # four sampled tiles, which is what this session had to fall back to;
+            # `src/lib/look.ts` reads these and asserts the clip point's percentile.
+            'p99': _percentile(counts, total, 99),
+            'p999': _percentile(counts, total, 99.9),
+            'p9999': _percentile(counts, total, 99.99),
+            'maxDn': int((counts > 0).nonzero()[0].max()),
             'samples': total,
             'tiles': len(paths)}
 

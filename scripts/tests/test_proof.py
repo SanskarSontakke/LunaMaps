@@ -223,6 +223,41 @@ def test_percentiles_are_the_measured_distribution(indexed_pyramid):
     assert h['p33'] == 10 and h['p67'] == 21
 
 
+def test_the_top_of_the_distribution_is_recorded_too(indexed_pyramid):
+    """The `paper` canvas filter is affine, so it has a clip point (DN 178.91 for
+    contrast 0.72 then brightness 1.55) and everything above it becomes pure white.
+    Retuning that filter has to be checked against the top of the real histogram, so
+    the top is in the artifact: p99 / p99.9 / p99.99 / maxDn.
+
+    This fixture is eight equal tiles at DN 0,1,10,11,20,21,30,31, so every
+    percentile above the 87.5th lands on 31 and nothing is interpolated -- a nearest
+    rank, not a guess.
+    """
+    h = proof.albedo_percentiles(indexed_pyramid, 'paper', 1)
+    assert (h['p99'], h['p999'], h['p9999'], h['maxDn']) == (31, 31, 31, 31)
+    # Ordered, and monotone in the tail: a percentile that ignores the top of the
+    # distribution would let a clipping filter pass as "no change".
+    assert h['p67'] <= h['p99'] <= h['p999'] <= h['p9999'] <= h['maxDn']
+    assert h['samples'] == h['tiles'] * grid.TILE * grid.TILE
+
+
+def test_a_bright_tail_moves_the_percentiles(indexed_pyramid, tmp_path):
+    """The discriminating case: 1% of pixels pushed to 250 must show up at p99 and
+    must not move p33/p67, which is exactly the shape the paper-mode blow-outs have
+    (1.606% of `paper` L5 pixels clip today). Computed by hand from the fixture:
+    eight tiles of 262,144 px each is 2,097,152 px, so one tile at 250 is 12.5%."""
+    import numpy as np
+    from PIL import Image
+    from pathlib import Path
+    victim = sorted((Path(indexed_pyramid) / 'paper' / '1').glob('*/*.jpg'))[0]
+    Image.fromarray(np.full((grid.TILE, grid.TILE), 250, np.uint8)).save(victim,
+                                                                        quality=100)
+    h = proof.albedo_percentiles(indexed_pyramid, 'paper', 1)
+    assert h['maxDn'] == 250
+    assert h['p9999'] == 250, 'the top 0.01% is inside the replaced tile'
+    assert h['p33'] < 250 and h['p67'] < 250, 'the body of the distribution is intact'
+
+
 def test_missing_tile_is_an_error_not_a_zero(indexed_pyramid):
     with pytest.raises(FileNotFoundError):
         proof.tile_pixel(indexed_pyramid, 'paper', 4, 0.0, 0.0)
