@@ -883,9 +883,9 @@ def test_the_shipped_manifest_carries_a_valid_ortho_record():
 
 # The one guard in this file that reads a delivered tile tree rather than a tracked
 # artifact: `public/tiles/*` is gitignored with only the manifest force-added
-# (.gitignore:46-47), so a fresh clone has the 195 MB record and none of the 7,106
-# tiles it describes. Skipping there keeps a clone green without relaxing a single
-# assertion where the tree exists -- which is every machine that has run the bake.
+# (.gitignore:46-47), so a fresh clone holds the record and none of the 7,106 tiles it
+# describes. Skipping there keeps a clone green without relaxing a single assertion
+# where the tree exists -- which is every machine that has run the bake.
 ORTHO_TREE = REPO / 'public' / 'tiles' / 'ortho'
 
 
