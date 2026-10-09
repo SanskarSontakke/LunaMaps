@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import * as Cesium from 'cesium';
 import OrthoControl from '@/components/OrthoControl';
 import {
+  ORTHO_CREDIT,
   ORTHO_MAX_LEVEL,
   ORTHO_NO_DATA,
   ORTHO_URL_TEMPLATE,
@@ -13,6 +14,8 @@ import {
   isAvailabilityEmpty,
   isTileAvailable,
   orthoControlCopy,
+  orthoOnDisk,
+  orthoProbePaths,
 } from '@/lib/cesium/ortho';
 import { CREDIT, MOON_ELLIPSOID } from '@/lib/cesium/moon';
 import {
@@ -275,12 +278,20 @@ describe('the provider: a hole is never requested (brief requirement 1)', () => 
     expect(calls).toEqual([]);
   });
 
-  it('is configured for the ortho pyramid and reuses the single CREDIT object', () => {
+  it('is configured for the ortho pyramid and carries the overlay’s OWN credit', () => {
     const p = createOrthoProvider({ availability: FIXTURE });
     expect(ORTHO_URL_TEMPLATE).toBe('/tiles/ortho/{z}/{x}/{y}.jpg');
     expect(p.inner).toBeInstanceOf(Cesium.UrlTemplateImageryProvider);
     expect(p.inner.url).toBe(ORTHO_URL_TEMPLATE);
-    expect(p.credit).toBe(CREDIT);
+    // Not `CREDIT` from moon.ts: those pixels are Kaguya TC, not the LROC WAC
+    // mosaic, and a per-tile credit naming the wrong mission is a citation error
+    // the whole-branch review re-ruled against the Task-2 "one credit object"
+    // ruling (which was made for two layers that really did share a provenance).
+    expect(p.credit).toBe(ORTHO_CREDIT);
+    expect(p.credit.html).toMatch(/Kaguya TC/);
+    expect(p.credit.html).toMatch(/JAXA/);
+    expect(p.credit.html).not.toMatch(/LROC WAC/);
+    expect(p.inner.credit).toBe(ORTHO_CREDIT);
     expect(p.tilingScheme).toBeInstanceOf(Cesium.GeographicTilingScheme);
     expect((p.tilingScheme as Cesium.GeographicTilingScheme).ellipsoid).toBe(
       MOON_ELLIPSOID,
@@ -829,5 +840,60 @@ describe('the one-layer invariant is restated where it lived, not left to rot', 
     expect(src).toMatch(/is 1 or 2/);
     expect(src).toMatch(/orthoEnabled\(\): boolean/);
     expect(src).toMatch(/orthoOverlayEnabled\(viewer\)/);
+  });
+});
+
+describe('a recorded deep layer is proved on disk before it is attached', () => {
+  it('samples two corners per served level, and no level the envelope refuses', () => {
+    expect(orthoProbePaths(FIXTURE, 10)).toEqual([
+      '/tiles/ortho/9/10/5.jpg',
+      '/tiles/ortho/9/12/5.jpg',
+    ]);
+    // L7 is below this layer's envelope, and a single-tile level gives one path,
+    // not two fetches for the same file.
+    expect(orthoProbePaths({ '7': [[0, 1, 0, 0]], '8': [[0, 0, 0, 0]] }, 8)).toEqual([
+      '/tiles/ortho/8/0/0.jpg',
+    ]);
+    expect(orthoProbePaths({}, 10)).toEqual([]);
+  });
+
+  it('reads one failed sample, or no sample at all, as "not here"', () => {
+    expect(orthoOnDisk([{ ok: true }, { ok: true }])).toBe(true);
+    expect(orthoOnDisk([{ ok: true }, { ok: false }])).toBe(false);
+    expect(orthoOnDisk([])).toBe(false);
+  });
+
+  it('names the third state instead of claiming the record is empty', () => {
+    const recorded: Availability = {
+      '8': [[0, 0, 0, 0]],
+      '9': [[0, 0, 0, 0]],
+      '10': [[0, 0, 0, 0]],
+    };
+    const absent = orthoControlCopy(recorded, 10, false);
+    expect(absent.unavailable).toBe(true);
+    expect(absent.title).toMatch(/not on this machine/i);
+    expect(absent.gloss).toContain('bake:deep');
+    expect(absent.gloss).toContain('L8–L10');
+    // The old empty-record wording would be a lie here: this record DOES name tiles.
+    expect(absent.gloss).not.toMatch(/records no ortho tiles/);
+    // Nothing recorded is still the other answer, and it stays distinct.
+    expect(orthoControlCopy({}, 10, false).title).toBe('Deep zoom unavailable');
+    // And the ordinary case is unchanged by the new parameter's default.
+    expect(orthoControlCopy(recorded, 10).unavailable).toBe(false);
+  });
+
+  it('renders the third state as a disabled button that says why', () => {
+    const html = renderToStaticMarkup(
+      OrthoControl({
+        availability: { '10': [[0, 0, 0, 0]] },
+        top: 10,
+        onDisk: false,
+        enabled: false,
+        onToggle: () => {},
+      }),
+    );
+    expect(html).toContain('not on this machine');
+    expect(html).toMatch(/disabled=""/);
+    expect(html).toContain('aria-pressed="false"');
   });
 });

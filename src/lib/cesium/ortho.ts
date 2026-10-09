@@ -1,11 +1,31 @@
 import * as Cesium from 'cesium';
-import { CREDIT, MOON_ELLIPSOID, TILE_SIZE } from './moon';
+import { MOON_ELLIPSOID, TILE_SIZE } from './moon';
 import { MAX_TOP_LEVEL, levelCols, levelRows, mPerPx } from '@/lib/grid';
 import type { Availability, TileRange } from '@/types';
 
 /**
+ * The overlay's own attribution, because these pixels are not LROC's.
+ *
+ * `moon.ts`'s `CREDIT` names the three products the *baked* layers come from, and
+ * `ortho` is none of them: its tiles are the Kaguya TC orthomosaic — SELENE/Kaguya
+ * Terrain Camera, JAXA — range-read out of the COG USGS Astrogeology serves at
+ * `asc-pds-services` (`regions.SOURCES['kaguya-tc'].url`, whose bytes were streamed,
+ * never downloaded, so it is absent from `data/raw/sha256.json` and therefore from the
+ * manifest's `sources` too). Per-tile credit that names a different mission than the
+ * imagery is not a formatting slip, it is a citation error.
+ *
+ * The Task-2 ruling "CREDIT is the single attribution source" was made for two layers
+ * that genuinely shared one provenance; the whole-branch review re-ruled it for a
+ * fourth source, and `ortho.test.ts` now pins that the overlay does not carry the WAC
+ * string.
+ */
+export const ORTHO_CREDIT = new Cesium.Credit(
+  'Kaguya TC orthomosaic (SELENE/Kaguya Terrain Camera, JAXA) via USGS Astrogeology',
+);
+
+/**
  * The deep-zoom `ortho` overlay: L8–L10 JPEGs of a Kaguya TC orthophoto, baked
- * for thirteen region boxes into `public/tiles/ortho/` and nowhere else.
+ * for twelve region boxes into `public/tiles/ortho/` and nowhere else.
  *
  * Two facts decide the shape of this file.
  *
@@ -26,9 +46,10 @@ import type { Availability, TileRange } from '@/types';
  *    hasAlphaChannel, getTileCredits, requestImage, pickFeatures` and nothing
  *    else. `ImageryLayer._createTileImagerySkeletons` intersects the tile with
  *    ONE rectangle (`provider.rectangle ∩ layer.rectangle`) and then requests
- *    every tile in the level-clamped block. Thirteen disjoint boxes inside a
- *    south-polar cap that spans every longitude is not expressible as one
- *    rectangle, so the gate has to live in `requestImage` itself.
+ *    every tile in the level-clamped block. Twelve disjoint boxes — landing sites,
+ *    maria, craters and rilles scattered from −43° to +43° and across 180° of
+ *    longitude — are not expressible as one rectangle, so the gate has to live in
+ *    `requestImage` itself.
  *
  * So the hole geometry is expressed once — `isTileAvailable` / `availableTiles`,
  * both reading the same `Availability` — and consumed twice: `availableTiles` is
@@ -76,17 +97,18 @@ export const ORTHO_MAX_LEVEL = MAX_TOP_LEVEL;
  * the controller ruled against the brief (task-3-findings, Important 2).
  *
  * The condition on that ruling is discharged. Measured live over CDP in four states
- * (driver kept out of git as `work/perf_probe.mjs` and `work/perf-minimumLevel.json`,
- * like every other capture tool here; run twice, every count reproduced identically): inside a region the overlay is asked for 12 tiles and 12
- * HTTP requests follow, plus 5 sentinel answers for the L0-L7 terrain tiles; outside
- * every region it is asked for 28 and issues no request at all -- the gate, not the
- * clamp, is what refuses, exactly as argued above. Tiles-to-render is 5 inside and 2
- * outside with the overlay on or off. SwiftShader frame time goes 73.3 -> 89.3 ms
- * inside a region (the 12 new 512 px textures) and is unchanged outside (78.2 -> 75.5
- * ms); the second run gave +18.4% and -5.3%. Absolute milliseconds are CPU rasterised,
- * not this machine's GPU, and the viewer runs in `requestRenderMode`, so the cost is
- * paid on interaction frames rather than continuously. Zero tile errors in all four
- * states. `0` stays.
+ * (driver and both runs are gitignored capture tooling, like everything else here:
+ * `work/perf_probe.mjs`, `work/perf-run1.json`, `work/perf-minimumLevel.json`; every
+ * count reproduced identically across the two runs): inside a region the overlay is
+ * asked for 12 tiles and 12 HTTP requests follow, plus 5 sentinel answers for the
+ * L0-L7 terrain tiles; outside every region it is asked for 28 and issues no request
+ * at all -- the gate, not the clamp, is what refuses, exactly as argued above.
+ * Tiles-to-render is 5 inside and 2 outside with the overlay on or off. SwiftShader
+ * frame p50, run 1: 73.3 -> 89.3 ms inside a region (the 12 new 512 px textures) and
+ * 78.2 -> 75.5 ms outside; run 2: 74.9 -> 88.7 and 79.2 -> 75.0. Absolute
+ * milliseconds are CPU rasterised, not this machine's GPU, and the viewer runs in
+ * `requestRenderMode`, so the cost is paid on interaction frames rather than
+ * continuously. Zero tile errors in all four states. `0` stays.
  */
 const ORTHO_ADVERTISED_MIN_LEVEL = 0;
 
@@ -337,10 +359,10 @@ export function createOrthoProvider(
       tileHeight: TILE_SIZE,
       minimumLevel,
       maximumLevel,
-      // No rectangle: the coverage is thirteen boxes, which is not a rectangle,
-      // and the per-tile gate below is what keeps the requests honest.
+      // No rectangle: the coverage is twelve scattered boxes, which is not a
+      // rectangle, and the per-tile gate below is what keeps the requests honest.
       rectangle: Cesium.Rectangle.MAX_VALUE,
-      credit: CREDIT,
+      credit: ORTHO_CREDIT,
     });
 
   const errorEvent = new Cesium.Event();
@@ -405,7 +427,7 @@ export function createOrthoProvider(
     minimumLevel,
     maximumLevel,
     // The single attribution object from moon.ts, never a retyped string.
-    credit: CREDIT,
+    credit: ORTHO_CREDIT,
     proxy: inner.proxy,
     hasAlphaChannel: false,
     errorEvent,
@@ -434,6 +456,50 @@ export interface OrthoControlCopy {
 }
 
 /**
+ * Paths that prove the recorded deep layer is on **this** machine.
+ *
+ * `public/tiles/*` is gitignored with only `manifest.json` force-added
+ * (`.gitignore:46-47`), and `layers.ortho` is carried through a reindex verbatim, so
+ * the record and the tree can only ever diverge: a fresh clone has a manifest
+ * promising 7,106 deep tiles, `probeAssets` checks three base-layer paths and none of
+ * them, and the overlay would attach and 404 inside every box.
+ *
+ * Two samples per served level -- the near corner of the first rectangle and the far
+ * corner of the last -- not one per rectangle: this answers "did the stream run on
+ * this machine", which is the question a clone can actually be the wrong answer to. It
+ * does NOT promise that all 12 boxes are complete, and nothing short of shipping an
+ * index of every tile would; a half-streamed plan still advertises its finished boxes
+ * and shows the base layer inside the unfinished ones, which is what the availability
+ * gate is for.
+ */
+export function orthoProbePaths(availability: Availability, top: number): string[] {
+  const out: string[] = [];
+  for (const level of orthoLevels(availability, top)) {
+    const ranges = availability[String(level)] ?? [];
+    if (ranges.length === 0) continue;
+    const [x0, , , y0] = ranges[0];
+    const [, x1, , y1] = ranges[ranges.length - 1];
+    out.push(`/tiles/ortho/${level}/${x0}/${y0}.jpg`);
+    out.push(`/tiles/ortho/${level}/${x1}/${y1}.jpg`);
+  }
+  // A level with one rectangle gives the same tile twice; the point is two samples
+  // per level where they differ, not two fetches for one file.
+  return [...new Set(out)];
+}
+
+/**
+ * The answer to "is the deep layer actually here?", in one pure function so the
+ * routing is testable without a fetch.
+ *
+ * Any failed sample means no. An empty probe list means no, because callers reach
+ * here only when they expected tiles: `[]` is "nothing to check", and treating that as
+ * proof would turn a bug in the path builder into a claim that the tree exists.
+ */
+export function orthoOnDisk(probes: { ok: boolean }[]): boolean {
+  return probes.length > 0 && probes.every((p) => p.ok);
+}
+
+/**
  * The control's wording, in one exported function so requirement 6 is testable
  * prose rather than JSX nobody reads. It names the source and the radiometry:
  * `ortho` is a **shaded orthophoto**, not illumination-normalised albedo, and a
@@ -449,6 +515,7 @@ export interface OrthoControlCopy {
 export function orthoControlCopy(
   availability: Availability | undefined,
   top?: number,
+  onDisk = true,
 ): OrthoControlCopy {
   const levels = availability ? orthoLevels(availability, top) : [];
   // Emptiness is "nothing inside the envelope has a rectangle in it", which is
@@ -472,6 +539,21 @@ export function orthoControlCopy(
       gloss:
         `${source}: the manifest records no ortho tiles the overlay can serve, so ` +
         'nothing was baked here to request and the overlay stays off.',
+      unavailable: true,
+    };
+  }
+  if (!onDisk) {
+    // The record names tiles and the tree does not hold them: a clone that has run
+    // `npm run bake` but not `npm run bake:deep`, or a partial stream. Saying "the
+    // manifest records no ortho tiles" here would be false, and saying nothing would
+    // let the user attach an overlay that 404s inside every box.
+    return {
+      title: 'Deep zoom not on this machine',
+      gloss:
+        `${source}: the manifest records tiles at ${
+          levels.length === 1 ? `L${levels[0]}` : `L${levels[0]}–L${levels[levels.length - 1]}`
+        }, but they are not in public/tiles/ortho here. Run npm run bake:deep ` +
+        '(streaming the baked boxes out of the Kaguya COG) and then npm run bake:publish.',
       unavailable: true,
     };
   }

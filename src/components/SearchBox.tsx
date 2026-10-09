@@ -29,7 +29,7 @@ export default function SearchBox({
   const listId = `${uid}-results`;
   const optionId = (i: number) => `${uid}-opt-${i}`;
 
-  // 600 features x ~8 field scores per keystroke; the matcher is sub-millisecond
+  // 1,585 features x ~8 field scores per keystroke; the matcher is sub-millisecond
   // but the memo keeps it off the React render path on every unrelated state
   // change (camera readouts re-render at 8 Hz).
   const results = useMemo(
@@ -88,7 +88,9 @@ export default function SearchBox({
         aria-owns={listId}
         autoComplete="off"
         spellCheck={false}
-        placeholder={features ? 'Search 600 names…' : 'Search unavailable'}
+        placeholder={
+          features ? `Search ${features.features.length.toLocaleString('en-GB')} names…` : 'Search unavailable'
+        }
         disabled={!features}
         value={query}
         onChange={(e) => {

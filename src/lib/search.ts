@@ -19,7 +19,7 @@ const isSubsequence = (needle: string, hay: string) => {
  * words, then two `1`s in the life dates), which would otherwise leak an
  * eponym gloss into a mission search. So a subsequence hit is only credible
  * when every query *token* can be matched inside a single candidate token —
- * the usual fuzzy-search contract, and cheap to check at 600 features.
+ * the usual fuzzy-search contract, and cheap to check at 1,585 features.
  */
 const tokensCovered = (q: string, n: string) => {
   const tokens = n.split(' ');

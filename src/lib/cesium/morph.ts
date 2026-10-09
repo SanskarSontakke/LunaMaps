@@ -413,7 +413,7 @@ function waitForSceneMode(viewer: Cesium.Viewer, target: number): Promise<MorphW
  * `imageryCount() === 1`. That invariant is deliberately broken: `ortho` is an
  * **overlay stacked above whichever base layer is active**, not a third
  * mutually-exclusive chip. A chip would render a black globe everywhere except
- * the thirteen baked boxes, which is the opposite of "the base shows through".
+ * the twelve baked boxes, which is the opposite of "the base shows through".
  *
  * The truth now is: **exactly one base layer at index 0, plus the ortho overlay
  * above it when it is enabled** — so `imageryLayers.length` is 1 (overlay off)

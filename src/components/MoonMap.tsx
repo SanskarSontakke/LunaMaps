@@ -13,7 +13,7 @@ import {
   type CameraState,
   type ModeChange,
 } from '@/lib/cesium/morph';
-import { orthoLevels } from '@/lib/cesium/ortho';
+import { orthoLevels, orthoOnDisk, orthoProbePaths } from '@/lib/cesium/ortho';
 
 import { attemptMode, createModeLatch, type ModeAttempt } from '@/lib/cesium/modeLatch';
 import { attachPicking } from '@/lib/cesium/picking';
@@ -257,6 +257,12 @@ export default function MoonMap() {
   // overlay) are a separate change that has not happened yet. Off keeps today's
   // rendering exactly today's rendering.
   const [orthoEnabled, setOrthoEnabled] = useState(false);
+  // Is the deep layer's tree actually on this machine? `public/tiles/*` is
+  // gitignored except the manifest, and the manifest is carried through a reindex
+  // whether or not the 7,106 JPEGs travelled with it, so "recorded" and "here" are
+  // two different facts and only the second one makes the overlay safe to attach.
+  // Default `true` because a manifest with no record never reaches the question.
+  const [orthoHere, setOrthoHere] = useState(true);
   // What the live viewer was built with and has since been *confirmed* at for
   // the layer (`setLayer` is synchronous, so the layer effect dedupes on it
   // directly). The mode half of that idea now lives in `modeLatch`.
@@ -758,7 +764,7 @@ export default function MoonMap() {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed()) return;
     const availability = orthoAvailabilityOf(manifest);
-    if (orthoEnabled && availability) {
+    if (orthoEnabled && availability && orthoHere) {
       enableOrthoOverlay(viewer, {
         availability,
         top: manifest?.layers.ortho?.top,
@@ -769,7 +775,50 @@ export default function MoonMap() {
     // Every value this effect reads is a dependency already: `viewerRef` is a
     // ref, `orthoAvailabilityOf`/`enableOrthoOverlay`/`disableOrthoOverlay` are
     // module scope, so this array is complete and fixed-length like the others.
-  }, [orthoEnabled, manifest, bootNonce]);
+  }, [orthoEnabled, orthoHere, manifest, bootNonce]);
+
+  // Does the recorded deep layer exist on THIS machine? One GET per recorded
+  // rectangle's corners at each level the envelope serves -- a handful of requests,
+  // every one of them a tile the overlay would have asked for anyway. A miss turns
+  // the control into "not on this machine" instead of a toggle that attaches a
+  // pyramid of 404s inside all 12 boxes, and the base layers are unaffected either
+  // way: this is deliberately NOT part of the boot gate, which `probeAssets` decides,
+  // because deep zoom is an extra rather than a dependency.
+  useEffect(() => {
+    const ortho = manifest?.layers.ortho;
+    const paths = ortho ? orthoProbePaths(ortho.availability, ortho.top) : [];
+    if (!ortho || paths.length === 0) {
+      // No record, or a record the envelope serves nothing from: the control's own
+      // branches describe those, and there is no tree to look for.
+      setOrthoHere(true);
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      paths.map(async (path) => {
+        try {
+          const r = await fetch(path, { method: 'GET' });
+          return { path, ok: r.ok };
+        } catch {
+          return { path, ok: false };
+        }
+      }),
+    ).then((probes) => {
+      if (cancelled) return;
+      const here = orthoOnDisk(probes);
+      setOrthoHere(here);
+      if (!here) {
+        setOrthoEnabled(false);
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('[ortho] the manifest records deep tiles that are not on disk:',
+            probes.filter((p) => !p.ok).slice(0, 3).map((p) => p.path).join(' '));
+        }
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [manifest, bootNonce]);
 
   // Keep the sync's mirrors in step with the truth the effects just confirmed.
   useEffect(() => {
@@ -1011,6 +1060,7 @@ export default function MoonMap() {
           <OrthoControl
             availability={orthoAvailabilityOf(manifest)}
             top={manifest.layers.ortho?.top}
+            onDisk={orthoHere}
             enabled={orthoEnabled}
             onToggle={setOrthoEnabled}
           />

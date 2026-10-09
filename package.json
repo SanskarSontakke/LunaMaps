@@ -9,6 +9,8 @@
     "postinstall": "node scripts/postinstall_cesium.mjs",
     "fetch": ".venv\\Scripts\\python.exe scripts/fetch_data.py",
     "bake": ".venv\\Scripts\\python.exe scripts/bake.py",
+    "bake:deep": ".venv\\Scripts\\python.exe scripts/stream_bake.py",
+    "bake:publish": ".venv\\Scripts\\python.exe scripts/stream_bake.py --publish",
     "labels": ".venv\\Scripts\\python.exe scripts/labels.py",
     "proof": ".venv\\Scripts\\python.exe scripts/proof.py",
     "test:js": "vitest run",

@@ -76,7 +76,7 @@ export function attachLabels(viewer: Cesium.Viewer, fc: FeatureCollection): Labe
   });
 
   let shownCount = 0;
-  // Scratch objects reused across refreshes (600 entities × 8 Hz).
+  // Scratch objects reused across refreshes (1,585 entities × 8 Hz).
   const nHat = new Cesium.Cartesian3();
   const toCam = new Cesium.Cartesian3();
 

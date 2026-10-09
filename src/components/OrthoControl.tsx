@@ -21,15 +21,20 @@ import type { Availability } from '@/types';
 export default function OrthoControl({
   availability,
   top,
+  onDisk = true,
   enabled,
   onToggle,
 }: {
   availability: Availability | undefined;
   top?: number;
+  /** Whether the recorded tiles exist on this machine. False is a third state, not
+   *  the same as "no record": the manifest promises deep tiles and `public/tiles/`
+   *  does not hold them, which is the normal state of a fresh clone. */
+  onDisk?: boolean;
   enabled: boolean;
   onToggle: (next: boolean) => void;
 }) {
-  const copy = orthoControlCopy(availability, top);
+  const copy = orthoControlCopy(availability, top, onDisk);
   return (
     <div
       className="ctl ctl-ortho"
