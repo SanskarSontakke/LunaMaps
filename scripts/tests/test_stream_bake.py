@@ -979,3 +979,360 @@ def test_a_bad_plan_is_refused_before_anything_is_opened(tmp_path, monkeypatch,
     err = capsys.readouterr().err
     assert 'L9' in err and 'nac-spole' in err
     assert not (tmp_path / 'tiles').exists()
+
+
+# ---------------------------------------------------------------------------
+# publish: merging the ortho record into the delivered manifest
+#
+# Everything here lives on tmp_path: a manifest hand-written by the test, an ortho
+# tree baked from the injected fixture, and a regions file that deliberately does
+# not exist so provenance is empty and no bake is implied. Nothing reads or writes
+# the real public/tiles/.
+# ---------------------------------------------------------------------------
+
+def make_manifest(out):
+    """A minimal delivered manifest: paper, photo and geometryProof, the three
+    things the app boots on and the three a careless rewriter has dropped before."""
+    manifest.write_manifest(Path(out) / 'manifest.json', {
+        'schema': 1,
+        'generatedAt': '2026-10-08T00:00:00+00:00',
+        'grid': {'tileSize': 512, 'prjWkt': contract.MOON_WKT},
+        'levels': [], 'sources': [], 'timings': {'bakeSeconds': 1.0},
+        'layers': {'paper': {'top': 7, 'tiles': 43690, 'quality': 85},
+                   'photo': {'top': 7, 'tiles': 43690, 'quality': 85}},
+        'geometryProof': {'passed': True, 'level': 5, 'contrast': 48.0},
+    })
+
+
+def bake_wide_l1(out, global_path):
+    """The 8-tile L1 wide box: L1 is the only level with tiles, so top == 1."""
+    open_, _, _ = opener_for(global_path)
+    stream_bake.bake_all(plan_of(region('wide', lo=1, hi=1)), out, opener=open_,
+                         quality=100)
+
+
+NO_REGIONS = 'a regions file that is not there, so publish derives no provenance'
+
+
+def test_publishing_after_a_bake_writes_a_record_matching_the_files(
+        global_path, tmp_path):
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    make_manifest(out)
+    rec = stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    disk = stream_bake.availability_from_disk(out, 'ortho', [1])
+    assert rec['availability'] == disk, 'the record promises exactly the files'
+    assert rec['top'] == 1, 'top is the deepest level with tiles, off the disk'
+    assert manifest.validate_availability(rec['availability'], rec['top']) == []
+    written = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert written['layers']['ortho'] == rec
+
+
+def test_publishing_after_a_deleted_tile_does_not_promise_it(global_path, tmp_path):
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    make_manifest(out)
+    (out / 'ortho' / '1' / '0' / '0.jpg').unlink()
+    rec = stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    # The record came off the disk after the deletion, so (0,0) is in no range.
+    assert rec['availability'] == stream_bake.availability_from_disk(out, 'ortho',
+                                                                     [1])
+    assert not any(r[0] <= 0 <= r[1] and r[2] <= 0 <= r[3]
+                   for r in rec['availability']['1']), 'a deleted tile is not a promise'
+
+
+def test_publishing_carries_every_other_key_and_layer_intact(global_path, tmp_path):
+    """Compare the untouched keys before and after, not merely that they exist.
+
+    The historical defect this guards is bake.py silently dropping geometryProof on
+    a manifest rewrite; a test that only asserted 'geometryProof' in manifest would
+    still pass after the merge lost the paper record's tiles/quality fields.
+    """
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    make_manifest(out)
+    before = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    after = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert set(after) - set(before) == {'layers'} or 'ortho' in after['layers']
+    for key in before:
+        if key == 'layers':
+            continue
+        assert after[key] == before[key], f'publish changed top-level key {key!r}'
+    for name in ('paper', 'photo'):
+        assert after['layers'][name] == before['layers'][name], \
+            f'publish changed the {name} record'
+    assert after['geometryProof'] == before['geometryProof'], \
+        'geometryProof dropped -- the exact defect this pins'
+
+
+def test_an_empty_ortho_tree_refuses_and_leaves_the_manifest_untouched(tmp_path):
+    out = tmp_path / 'tiles'
+    make_manifest(out)
+    raw = (out / 'manifest.json').read_bytes()
+    with pytest.raises(stream_bake.PublishRefusal):
+        stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    assert (out / 'manifest.json').read_bytes() == raw, 'a refused publish writes nothing'
+
+
+def test_publish_writes_lf_only_with_a_single_trailing_newline(global_path, tmp_path):
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    make_manifest(out)
+    stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    data = (out / 'manifest.json').read_bytes()
+    assert b'\r' not in data, 'the manifest is LF-only, whatever the platform'
+    assert data.endswith(b'\n') and not data.endswith(b'\n\n'), \
+        'exactly one trailing newline'
+
+
+def test_publish_refuses_when_validate_availability_is_unhappy(global_path, tmp_path):
+    """The validate gate is consulted, not decorative: feed it a real disk state
+    it rejects (a level deeper than grid.MAX_TOP_LEVEL) and assert the refusal."""
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    stray = out / 'ortho' / str(grid.MAX_TOP_LEVEL + 1) / '0'
+    stray.mkdir(parents=True)
+    (stray / '0.jpg').write_bytes(b'\xff\xd8\xff\xd9')   # a jpeg at a level no bake wrote
+    make_manifest(out)
+    raw = (out / 'manifest.json').read_bytes()
+    bad = stream_bake.availability_from_disk(out, 'ortho', [1, grid.MAX_TOP_LEVEL + 1])
+    assert manifest.validate_availability(bad, grid.MAX_TOP_LEVEL + 1), \
+        'the fed state is one validate rejects'
+    with pytest.raises(stream_bake.PublishRefusal):
+        stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    assert (out / 'manifest.json').read_bytes() == raw, 'a refused publish writes nothing'
+
+
+def test_publish_cli_writes_and_dry_run_does_not(global_path, tmp_path, monkeypatch,
+                                                 capsys):
+    """--publish on its own publishes; --publish --dry-run only reports."""
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    make_manifest(out)
+    argv(monkeypatch, '--out', str(out), '--regions', str(tmp_path / 'nope.json'),
+         '--publish', '--dry-run')
+    assert stream_bake.main() == 0
+    printed = capsys.readouterr().out.lower()
+    assert 'dry run' in printed
+    assert 'ortho' not in json.loads(
+        (out / 'manifest.json').read_text(encoding='utf-8'))['layers'], \
+        '--publish --dry-run must not write'
+
+    argv(monkeypatch, '--out', str(out), '--regions', str(tmp_path / 'nope.json'),
+         '--publish')
+    assert stream_bake.main() == 0
+    rec = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))['layers']['ortho']
+    assert rec['top'] == 1
+
+
+def test_republishing_updates_the_record_in_place(global_path, tmp_path):
+    """A second --publish over an already-published layer must not trip the
+    guard that protects the *other* layers: `ortho` is the record being rewritten,
+    so it is exempt, while `paper`/`photo` still have to survive untouched."""
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    make_manifest(out)
+    before = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    first = stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    (out / 'ortho' / '1' / '0' / '0.jpg').unlink()   # a tile goes missing between runs
+    second = stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    assert second['tiles'] == first['tiles'] - 1
+    after = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert after['layers']['ortho'] == second
+    for name in ('paper', 'photo'):
+        assert after['layers'][name] == before['layers'][name], \
+            f'republishing disturbed the {name} layer'
+    assert after['geometryProof'] == before['geometryProof']
+
+
+def test_publish_refuses_a_manifest_that_would_lose_the_base_layers(
+        global_path, tmp_path):
+    """A delivered manifest missing a base layer is not something to merge into:
+    writing would ship a manifest the app refuses to boot."""
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    manifest.write_manifest(out / 'manifest.json', {
+        'schema': 1, 'generatedAt': 'x', 'grid': {}, 'levels': [], 'sources': [],
+        'layers': {'paper': {'top': 7}},   # no photo, no geometryProof
+    })
+    with pytest.raises(stream_bake.PublishRefusal):
+        stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+
+
+# ---------------------------------------------------------------------------
+# the geometryProof guards: a presence check before the merge, a re-read after it
+#
+# Both of the merge's original loops compared `merged` / `layers` against the very
+# dicts they were copied from (`merged = dict(prev)`), so no input could fire them
+# and `geometryProof` was never named in a check. These tests are what makes the
+# guard real: each fails if its half of the guard is missing.
+# ---------------------------------------------------------------------------
+
+def strip_manifest_keys(out, *keys):
+    """`make_manifest(out)` with `keys` removed, rewritten through the real writer.
+
+    Returns the bytes now on disk so a refusal can be proven to have written
+    nothing.
+    """
+    make_manifest(out)
+    data = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    for key in keys:
+        del data[key]
+    manifest.write_manifest(out / 'manifest.json', data)
+    return (out / 'manifest.json').read_bytes()
+
+
+def corrupt_writer(mutate):
+    """A stand-in for `manifest.write_manifest` that writes `mutate(bytes)`.
+
+    It is the only way to test the post-write guard without editing a forbidden
+    file: the guard has to catch what actually landed on disk, and
+    `write_manifest` truncates the file before rewriting it (`manifest.py:87`),
+    so a half write is a real state a publish can be left holding.
+    """
+    def write_(path, data):
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(mutate((json.dumps(data, indent=1) + '\n').encode('utf-8')))
+        return p
+    return write_
+
+
+def test_publish_refuses_a_manifest_with_no_geometry_proof(global_path, tmp_path):
+    """Pre-merge guard: a manifest with `paper` + `photo` and no `geometryProof` is
+    not something to merge into, because the file that ships afterwards would be
+    the one without the proof.
+
+    Without the guard this publishes happily -- that is the hole the review proved
+    (`test_publish_refuses_a_manifest_that_would_lose_the_base_layers` only fired
+    because `photo` was missing too).
+    """
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    raw = strip_manifest_keys(out, 'geometryProof')
+    with pytest.raises(stream_bake.PublishRefusal) as exc:
+        stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    assert 'geometryProof' in str(exc.value), 'the refusal must name what it guards'
+    assert (out / 'manifest.json').read_bytes() == raw, \
+        'the guard is pre-merge: a refusal writes nothing'
+
+
+def test_publish_refuses_when_the_written_manifest_lost_geometry_proof(
+        global_path, tmp_path, monkeypatch):
+    """Post-write guard: re-read the file and compare every key that was not ours
+    against what we read before merging.
+
+    The writer here is a stand-in that loses `geometryProof` after a correct merge,
+    which is exactly the `bake.py` defect this brief forbids repeating -- and the
+    in-memory comparison the old code made could never see it.
+    """
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    make_manifest(out)
+
+    def drop_proof(data):
+        m = json.loads(data.decode('utf-8'))
+        del m['geometryProof']
+        return (json.dumps(m, indent=1) + '\n').encode('utf-8')
+
+    monkeypatch.setattr(manifest, 'write_manifest', corrupt_writer(drop_proof))
+    with pytest.raises(stream_bake.PublishRefusal) as exc:
+        stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    assert 'geometryProof' in str(exc.value)
+
+
+def test_publish_refuses_when_the_manifest_written_is_truncated(
+        global_path, tmp_path, monkeypatch):
+    """The same re-read catches a write that did not finish: the file on disk is not
+    even parseable, and a publish that returns 0 while leaving that behind is worse
+    than a refusal."""
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    make_manifest(out)
+    monkeypatch.setattr(manifest, 'write_manifest',
+                        corrupt_writer(lambda data: data[:len(data) // 2]))
+    with pytest.raises(stream_bake.PublishRefusal) as exc:
+        stream_bake.publish(out, 'ortho', regions_file=tmp_path / 'nope.json')
+    assert 'manifest' in str(exc.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# provenance, tested against a real regions fixture
+#
+# The publish tests above deliberately pass a nonexistent regions file, so
+# `_region_provenance` always returned `(None, [])` there and the 30 lines that
+# decide which regions a published record names were unexercised. These two use a
+# fixture file and a hand-built tile tree at L2, where the box -> tile arithmetic is
+# checkable in your head (8 columns x 4 rows, 45 deg a side):
+#
+#   alpha  box [-130,   5, -100,  40] -> tile (1, 1)
+#   zulu   box [-130,   5, -100,  80] -> tiles (1, 0), (1, 1)
+#   beta   box [  10, -40,   60, -20] -> tiles (4, 2), (5, 2)
+#   cap    box [ 100, -40,  120, -20] -> tile  (6, 2)   -- never written
+# ---------------------------------------------------------------------------
+
+def write_tile_tree(out, layer, coords):
+    """`<out>/<layer>/<L>/<x>/<y>.jpg` for each (L, x, y): a tree with no bake.
+
+    Provenance reads the tree's shape and nothing else, so naming the exact tiles on
+    disk here is stronger than inheriting a bake's geometry.
+    """
+    for L, x, y in coords:
+        d = Path(out) / layer / str(L) / str(x)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f'{y}.jpg').write_bytes(b'\xff\xd8\xff\xd9')
+
+
+def provenance_regions_file(tmp_path, source_by_id=None):
+    """The four-region fixture above as a regions.json, `source` per region."""
+    boxes = {'alpha': [-130.0, 5.0, -100.0, 40.0],
+             'zulu': [-130.0, 5.0, -100.0, 80.0],
+             'beta': [10.0, -40.0, 60.0, -20.0],
+             'south-polar-cap': [100.0, -40.0, 120.0, -20.0]}
+    regs = [{'id': rid, 'name': rid, 'kind': 'polar-cap' if rid.endswith('cap')
+             else 'feature', 'box': box, 'minLevel': 2, 'maxLevel': 2,
+             'source': (source_by_id or {}).get(rid, 'test-cog')}
+            for rid, box in boxes.items()]
+    path = tmp_path / 'regions.json'
+    path.write_text(json.dumps({'schema': 1, 'regions': regs}), encoding='utf-8')
+    return path
+
+
+def test_region_provenance_names_only_regions_with_a_tile_on_disk(tmp_path):
+    out = tmp_path / 'tiles'
+    write_tile_tree(out, 'ortho', [(2, 1, 1), (2, 4, 2)])
+    rf = provenance_regions_file(tmp_path, {'south-polar-cap': 'nac-spole'})
+
+    source, ids = stream_bake._region_provenance(out, 'ortho', rf)
+    assert ids == ['alpha', 'beta', 'zulu'], (
+        'zulu shares alpha\'s tile and beta counts one of its two, so three regions '
+        'are named; the cap has no tile on disk and is not advertised')
+    assert 'south-polar-cap' not in ids, 'the exclusion the record rests on'
+    assert source == 'test-cog', (
+        'one source across the published set is one key -- and the excluded cap\'s '
+        'own source is not among the keys, which is what a stale record would leak')
+
+    # The omitted region is omitted because nothing was written for it, not because
+    # provenance lost the ability to see it: one tile in its rectangle and it is named.
+    write_tile_tree(out, 'ortho', [(2, 6, 2)])
+    second_source, ids_after = stream_bake._region_provenance(out, 'ortho', rf)
+    assert ids_after == ['alpha', 'beta', 'south-polar-cap', 'zulu']
+    assert second_source == ['test-cog', 'nac-spole'], \
+        'two published sources is a list in file order, not one of them picked'
+
+
+def test_publishing_records_the_regions_that_have_tiles_on_disk(tmp_path):
+    """The fixture provenance reaches the record `publish` merges, not just the
+    helper that computes it."""
+    out = tmp_path / 'tiles'
+    write_tile_tree(out, 'ortho', [(2, 1, 1), (2, 4, 2)])
+    make_manifest(out)
+    rec = stream_bake.publish(out, 'ortho',
+                              regions_file=provenance_regions_file(tmp_path))
+    assert rec['regions'] == ['alpha', 'beta', 'zulu']
+    assert rec['source'] == 'test-cog'
+    assert rec['tiles'] == 2 and rec['bytes'] > 0
+    written = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert written['layers']['ortho']['regions'] == ['alpha', 'beta', 'zulu']
+    assert written['geometryProof'], 'the fixture manifest kept its proof'

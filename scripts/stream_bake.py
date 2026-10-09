@@ -33,10 +33,13 @@ Two things this module deliberately does not do:
   `default_opener` is the only function that touches `rasterio`, and it only
   prepends GDAL's streaming prefix to the URL it was handed. Tests inject an opener,
   so nothing here can open a socket.
-* It writes no manifest. Tiles go through `bake.save_tile`, which owns the
+* A bake run writes no manifest. Tiles go through `bake.save_tile`, which owns the
   `{layer}/{L}/{x}/{y}.jpg` layout, the skip-if-exists resume and `--force`; the
   availability answer comes back off the filesystem (`availability_from_disk`),
-  because the plan says what should exist and only the disk says what does.
+  because the plan says what should exist and only the disk says what does. The
+  one exception is the deliberate, separate `--publish` step: it merges
+  `layers.<name>` into the delivered manifest from the tiles already on disk
+  (`publish`), and writes that single file and nothing else.
 
 No box edge is padded or wrapped: reads are tile-aligned, so the periodic-padding
 hazard (`wrap_x=False`) does not arise -- an antimeridian box is simply two
@@ -48,6 +51,7 @@ import argparse
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -58,6 +62,7 @@ from rasterio.windows import Window
 
 import bake
 import grid
+import manifest
 import regions
 
 # The one thing added to a source URL: GDAL's streaming prefix, which turns an
@@ -98,6 +103,18 @@ class ShortRead(RuntimeError):
 
     Deliberately not retryable: a short answer is a wrong answer, not a late one,
     and part of a chunk is not a tile. The region fails; its tiles are not written.
+    """
+
+
+class PublishRefusal(RuntimeError):
+    """`--publish` will not write the manifest.
+
+    Raised for the three states where a half-written or empty `layers.ortho` is
+    worse than none: no tiles to describe, an availability block
+    `validate_availability` rejects (a 404 on every frame), or a merge that would
+    drop a base layer or `geometryProof` the app boots on. In every case the
+    manifest on disk is left byte-for-byte untouched, so a refusal is safe to
+    retry once the tree or the manifest is fixed.
     """
 
 
@@ -534,6 +551,191 @@ def availability_from_disk(out_dir, layer, levels) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# publish: merge layers.<name> into the delivered manifest
+#
+# This is the only path in the module that writes a manifest, and it writes
+# exactly one file. The rule that makes the whole step exist -- the filesystem
+# answers, not the plan -- is kept: availability, `top`, the tile count and the
+# byte total all come off the tiles on disk. The merge reads the delivered
+# manifest, adds one key under `layers`, and writes it back through
+# `manifest.write_manifest` so the LF + single-trailing-newline convention the
+# tracked file is checked against is the writer's, not a hand-rolled one.
+# ---------------------------------------------------------------------------
+
+def _disk_tile_index(out_dir, layer) -> dict:
+    """`{level:int -> {(x, y), ...}}` for every JPEG under `<out>/<layer>`.
+
+    The raw coordinates behind `availability_from_disk`, so the tile count, the
+    byte total and the region cross-check can read the same on-disk set instead of
+    re-walking the tree. Off the filesystem only, never off the plan.
+    """
+    d = Path(out_dir) / layer
+    idx: dict[int, set] = {}
+    if not d.is_dir():
+        return idx
+    for sub in d.iterdir():
+        if not (sub.is_dir() and sub.name.isdigit()):
+            continue
+        coords = idx.setdefault(int(sub.name), set())
+        for x_dir in sub.iterdir():
+            if not (x_dir.is_dir() and x_dir.name.isdigit()):
+                continue
+            x = int(x_dir.name)
+            for f in x_dir.glob('*.jpg'):
+                if f.stem.isdigit():
+                    coords.add((x, int(f.stem)))
+    return idx
+
+
+def _region_provenance(out_dir, layer, regions_file):
+    """`(source key, [region ids])` for the tiles that actually exist.
+
+    A region counts as published only when at least one of its planned tiles is on
+    disk, so the record names what the tree shows rather than what the plan hoped
+    for -- which is why the refused `nac-spole` polar cap never appears: none of
+    its tiles were written. If the regions file is absent there is nothing to
+    cross-reference and provenance is empty; the availability itself does not
+    depend on it.
+    """
+    idx = _disk_tile_index(out_dir, layer)
+    path = Path(regions_file)
+    if not path.exists():
+        return None, []
+    data = json.loads(path.read_text(encoding='utf-8'))
+    ids, keys = [], []
+    for reg in data.get('regions', []):
+        present = False
+        for L in regions.levels_of(reg):
+            ranges = regions.tile_ranges(regions.box_of(reg), L)
+            for (x, y) in idx.get(L, ()):
+                if any(r[0] <= x <= r[1] and r[2] <= y <= r[3] for r in ranges):
+                    present = True
+                    break
+            if present:
+                break
+        if present:
+            ids.append(reg['id'])
+            key = reg.get('source')
+            if key and key not in keys:
+                keys.append(key)
+    source = keys[0] if len(keys) == 1 else (keys or None)
+    return source, sorted(ids)
+
+
+def publish(out_dir, layer=DEFAULT_LAYER, *, regions_file=DEFAULT_REGIONS_FILE,
+            dry_run=False) -> dict:
+    """Merge `layers.<layer>` into the delivered manifest; return the record.
+
+    Availability and `top` are derived from the tiles on disk (never the plan),
+    validated with `manifest.validate_availability` before anything is written,
+    and the merge requires `paper`, `photo` and `geometryProof` to be present
+    before it and verifies from the re-read file that they survived it -- the
+    `geometryProof`-dropping defect that bit `bake.py` is refused here explicitly,
+    and a truncated or lossy write is refused after the fact rather than reported
+    as a success. `dry_run` computes, validates and reports the record but writes
+    nothing.
+    """
+    out = Path(out_dir)
+    mp = out / 'manifest.json'
+    idx = _disk_tile_index(out, layer)
+    levels = sorted(idx)
+    if not levels:
+        raise PublishRefusal(
+            f'no {layer} tiles exist under {out}: there is no availability to '
+            f'publish, and writing an empty layers.{layer} would advertise a '
+            f'layer that serves nothing')
+
+    availability = availability_from_disk(out, layer, levels)
+    top = max(levels)
+    problems = manifest.validate_availability(availability, top)
+    if problems:
+        raise PublishRefusal('availability from disk is not publishable: '
+                             + '; '.join(problems))
+
+    tiles = sum(len(v) for v in idx.values())
+    bytes_total = 0
+    for L, coords in idx.items():
+        for x, y in coords:
+            bytes_total += (out / layer / str(L) / str(x) / f'{y}.jpg').stat().st_size
+    source, region_ids = _region_provenance(out, layer, regions_file)
+
+    record = {
+        'top': top,
+        'availability': availability,
+        'source': source,
+        'regions': region_ids,
+        'tiles': tiles,
+        'bytes': bytes_total,
+        'publishedAt': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+    }
+
+    if dry_run:
+        return record
+
+    if not mp.exists():
+        raise PublishRefusal(f'{mp} is missing: publish merges into the delivered '
+                             f'manifest, it does not create one')
+    prev = json.loads(mp.read_text(encoding='utf-8'))
+    prev_layers = prev.get('layers', {})
+    layers = dict(prev_layers)
+    layers[layer] = record
+    merged = dict(prev)
+    merged['layers'] = layers
+
+    # Refuse to write a manifest the app cannot boot: it needs both base layers and
+    # the geometry proof. `geometryProof` is named here, and the check that can
+    # actually fire is the post-write re-read below -- comparing `merged` against
+    # the dict it was just copied out of (`merged = dict(prev)`) is true by
+    # construction, protects nothing, and was the gap this guard was meant to close.
+    for name in ('paper', 'photo'):
+        if name not in layers:
+            raise PublishRefusal(f'the merged manifest would have no {name!r} '
+                                 f'layer, which the app refuses to boot without')
+    if 'geometryProof' not in prev:
+        raise PublishRefusal(
+            "the delivered manifest has no 'geometryProof' key: publishing would "
+            'ship a manifest without it, which is the exact defect this step is '
+            'required to refuse')
+
+    manifest.write_manifest(mp, merged)
+
+    # Post-write verification: read the file back and compare everything that was
+    # not ours to change against the copy taken before the merge. Falsifiable, and
+    # it also catches a truncated write -- `manifest.write_manifest` overwrites the
+    # file with `write_bytes` (`manifest.py:87`), so a half-finished manifest is a
+    # state a publish can be left holding.
+    try:
+        written = json.loads(mp.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise PublishRefusal(
+            f'the manifest written to {mp} cannot be read back ({exc}): the write '
+            f'did not complete, and layers.{layer} will not be advertised from it')
+    if written.get('geometryProof') != prev['geometryProof']:
+        raise PublishRefusal(
+            "re-reading the written manifest shows 'geometryProof' is missing or "
+            f'changed: {mp} no longer holds the proof the merge read')
+    for key, value in prev.items():
+        if key == 'layers':
+            continue
+        if written.get(key) != value:
+            raise PublishRefusal(f'the written manifest altered top-level key {key!r}')
+    written_layers = written.get('layers', {})
+    for name, rec in prev_layers.items():
+        # `layer` itself is the record just written, so it is exempt here and
+        # checked against `record` below instead.
+        if name == layer:
+            continue
+        if written_layers.get(name) != rec:
+            raise PublishRefusal(
+                f'the written manifest altered the {name!r} layer record')
+    if written_layers.get(layer) != record:
+        raise PublishRefusal(
+            f'the written manifest does not hold the layers.{layer} record it was '
+            f'handed')
+    return record
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -568,6 +770,11 @@ def parser() -> argparse.ArgumentParser:
                     help='print the plan and its cost, open nothing, write nothing')
     ap.add_argument('--force', action='store_true',
                     help='re-encode tiles that already exist (default: resume)')
+    ap.add_argument('--publish', action='store_true',
+                    help='merge layers.ortho into manifest.json from the tiles\n'
+                         'on disk, then stop. Writes the manifest and nothing\n'
+                         'else; implies no bake and needs no other flag. Pair\n'
+                         'with --dry-run to see the record that would be written.')
     return ap
 
 
@@ -583,8 +790,44 @@ def print_plan(entries, total, per_level, args) -> None:
                                     for L, n in sorted(per_level.items())))
 
 
+def _publish_main(args) -> int:
+    """The `--publish` branch of main: report the record and (unless dry) write it.
+
+    Kept out of the bake path entirely, because `--publish` must not imply a bake
+    and must work with no other flags: it reads only what is on disk already.
+    """
+    try:
+        record = publish(args.out, args.layer, regions_file=args.regions,
+                         dry_run=args.dry_run)
+    except PublishRefusal as exc:
+        print(f'REFUSED to publish layers.{args.layer}: {exc}', file=sys.stderr)
+        return 2
+
+    verb = 'would publish' if args.dry_run else 'published'
+    regions_txt = ', '.join(record['regions']) or '(none matched on disk)'
+    print(f'{verb} layers.{args.layer}: top={record["top"]} '
+          f'tiles={record["tiles"]:,} bytes={record["bytes"]:,} '
+          f'source={record["source"]!r}')
+    print(f'  regions: {regions_txt}')
+    print('  availability (derived from the tiles on disk, never the plan):')
+    for level, ranges in sorted(record['availability'].items(), key=lambda kv: int(kv[0])):
+        print(f'    L{level}: {ranges}')
+    if args.dry_run:
+        print('dry run: manifest.json not written')
+        return 0
+    print(f'wrote layers.{args.layer} to {Path(args.out) / "manifest.json"}; '
+          f'every other key and layer carried forward unchanged.')
+    return 0
+
+
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
+
+    # --publish is a last-mile step over the finished tree: it neither plans nor
+    # bakes, and works with no other flag, so it short-circuits before the plan.
+    if args.publish:
+        return _publish_main(args)
+
     data = json.loads(Path(args.regions).read_text(encoding='utf-8'))
     regs = data.get('regions', [])
     sources = data.get('sources') or regions.SOURCES
@@ -629,9 +872,9 @@ def main(argv=None) -> int:
     for level, ranges in availability_from_disk(args.out, args.layer,
                                                levels).items():
         print(f'  L{level}: {ranges}')
-    print('no manifest.json written: the manifest belongs to bake.py until the '
-          'L7 bake that owns public/tiles/ finishes; publish this layer with an '
-          'explicit reindex run.')
+    print('no manifest.json written by this bake: the manifest belongs to bake.py '
+          'until the L7 bake that owns public/tiles/ finishes; merge this layer in '
+          'with an explicit `--publish` run over the finished tree.')
 
     if failed:
         for f in failed:

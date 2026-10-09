@@ -36,6 +36,7 @@ import bake        # noqa: E402
 import contract    # noqa: E402
 import grid        # noqa: E402
 import manifest    # noqa: E402
+import regions     # noqa: E402  (plan geometry only: stream_bake is NOT imported)
 
 REPO = Path(__file__).resolve().parents[2]
 SHIPPED_MANIFEST = REPO / 'public' / 'tiles' / 'manifest.json'
@@ -851,18 +852,112 @@ def manifest_with_ortho(ortho):
     return m
 
 
-def test_the_shipped_manifest_needs_no_ortho_record_at_all():
-    """`ortho` is optional by construction: the delivered manifest carries no
-    ortho record until the streaming bake writes one, and `paper`/`photo` must
-    keep booting either way. The assertion is on the real file, so the day Task 4
-    writes one this test says so instead of passing silently on a stale shape."""
+def test_the_shipped_manifest_carries_a_valid_ortho_record():
+    """The tripwire Task 3 left here fired exactly as designed: `ortho` was
+    optional until `stream_bake --publish` wrote the record, so this test asserted
+    `ortho not in layers` and was built to fail the day one appeared, forcing the
+    shape to be re-checked rather than passing silently on a stale expectation.
+
+    It is now rewritten for the published reality, and it keeps the invariant that
+    mattered all along: adding `layers.ortho` must not disturb `paper`/`photo`, and
+    the record must be the availability-gated overlay the app accepts. A merge that
+    dropped a base layer (the `geometryProof`/`paper`-drop defect class) fails here.
+    """
     m = json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8'))
-    assert 'ortho' not in m['layers'], \
-        'the shipped manifest gained an ortho record: re-check the top levels here'
+    assert 'ortho' in m['layers'], 'stream_bake --publish has not run yet'
+    ortho = m['layers']['ortho']
+    assert ortho['top'] == grid.MAX_TOP_LEVEL, 'the deep zoom tops out at the grid cap'
+    assert manifest.validate_availability(ortho['availability'], ortho['top']) == []
+    # The app's own gate carries it through, and leaves the base layers alone.
     parsed = parse_manifest_app(m)
     assert parsed is not None, 'parseManifest would refuse the shipped manifest'
-    assert 'ortho' not in parsed['layers']
-    assert parsed['layers'] == {'paper': {'top': 7}, 'photo': {'top': 7}}
+    assert parsed['layers']['paper'] == {'top': TIER_B_TOP}
+    assert parsed['layers']['photo'] == {'top': TIER_B_TOP}
+    assert parsed['layers']['ortho'] == {'top': ortho['top'],
+                                         'availability': ortho['availability']}
+    # Provenance the publish records, kept honest against the delivered tree.
+    assert ortho['source'] == 'kaguya-tc'
+    assert ortho['regions'], 'the record names the regions it published'
+    assert 'south-polar-cap' not in ortho['regions']
+
+
+# The one guard in this file that reads a delivered tile tree rather than a tracked
+# artifact: `public/tiles/*` is gitignored with only the manifest force-added
+# (.gitignore:46-47), so a fresh clone has the 195 MB record and none of the 7,106
+# tiles it describes. Skipping there keeps a clone green without relaxing a single
+# assertion where the tree exists -- which is every machine that has run the bake.
+ORTHO_TREE = REPO / 'public' / 'tiles' / 'ortho'
+
+
+@pytest.mark.skipif(not ORTHO_TREE.exists(),
+                    reason='the ortho tree is not in git; run stream_bake.py '
+                           'and this test re-derives the record from it')
+def test_the_published_ortho_counts_are_re_derived_from_the_delivered_tree():
+    """The artifact-level oracle for `layers.ortho`, computed here rather than by the
+    writer that made it: `stream_bake` is not imported by this file, so nothing in
+    this test can agree with a wrong record by calling the code that produced it.
+
+    It replaces `assert ortho['regions'] and ortho['tiles'] > 0 and
+    ortho['bytes'] > 0`, which passed for `tiles: 1`. Every assertion below is a
+    number the tree itself answers, and each one discriminates: a record that
+    under- or over-promises, double-counts an availability rectangle, or carries a
+    byte total from a different run fails here.
+    """
+    ortho = json.loads(SHIPPED_MANIFEST.read_text(
+        encoding='utf-8'))['layers']['ortho']
+    tree = ORTHO_TREE
+    jpgs = sorted(tree.rglob('*.jpg'))
+    assert jpgs, 'the delivered ortho tree is what this test reads'
+    on_disk = {}
+    for p in jpgs:
+        rel = p.relative_to(tree)
+        assert len(rel.parts) == 3, f'{rel} is not <level>/<x>/<y>.jpg'
+        level, x, y = rel.parts
+        on_disk[(int(level), int(x), int(y[:-4]))] = p
+    promised = {(int(L), x, y)
+                for L, ranges in ortho['availability'].items()
+                for r in ranges
+                for x in range(r[0], r[1] + 1)
+                for y in range(r[2], r[3] + 1)}
+    assert promised == set(on_disk), (
+        f'{len(promised - set(on_disk))} tiles promised with no file, '
+        f'{len(set(on_disk) - promised)} files the record does not promise')
+    assert ortho['tiles'] == len(on_disk), 'the count is the file count'
+    assert ortho['tiles'] == sum((r[1] - r[0] + 1) * (r[3] - r[2] + 1)
+                                 for ranges in ortho['availability'].values()
+                                 for r in ranges), \
+        'availability rectangles tile-cover the tree exactly once'
+    assert ortho['bytes'] == sum(p.stat().st_size for p in on_disk.values())
+    assert ortho['top'] == max(L for L, _, _ in on_disk)
+
+    # The south polar cap is missing from the record because not one of its planned
+    # tiles was ever written -- the justification for the exclusion, checked against
+    # the plan file and the tree rather than taken on the writer's word.
+    cap = next(r for r in json.loads(
+        (REPO / 'public' / 'data' / 'regions.json').read_text(
+            encoding='utf-8'))['regions'] if r['id'] == 'south-polar-cap')
+    assert cap['source'] == 'nac-spole', 'the refused source, per the shipped plan'
+    cap_tiles = {(L, x, y)
+                 for L in regions.levels_of(cap)
+                 for r in regions.tile_ranges(regions.box_of(cap), L)
+                 for x in range(r[0], r[1] + 1)
+                 for y in range(r[2], r[3] + 1)}
+    assert cap_tiles, 'the cap does plan tiles, so the exclusion is not vacuous'
+    assert not (cap_tiles & set(on_disk)), 'and none of them are on disk'
+    assert set(ortho['regions']) <= {r['id'] for r in json.loads(
+        (REPO / 'public' / 'data' / 'regions.json').read_text(
+            encoding='utf-8'))['regions']}, 'the record cites shipped region ids'
+
+
+def test_a_stale_manifest_without_ortho_still_boots():
+    """`ortho` is optional by construction: strip the record and `paper`/`photo`
+    must still parse, so the app is never bricked by the absence of deep zoom."""
+    m = manifest_with_ortho(_NO_ORTHO)
+    assert 'ortho' not in m['layers']
+    parsed = parse_manifest_app(m)
+    assert parsed is not None, 'parseManifest would refuse the base layers'
+    assert parsed['layers'] == {'paper': {'top': TIER_B_TOP},
+                               'photo': {'top': TIER_B_TOP}}
 
 
 def test_a_well_formed_ortho_record_is_carried_through():
