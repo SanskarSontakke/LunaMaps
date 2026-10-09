@@ -81,10 +81,16 @@ main {
 .ctl-layer { top: 14px; left: 148px; }
 /* Deep-zoom overlay (Task 3): under the layer chips it stacks on, never beside
    them — it is an overlay, not a third base layer. The gloss is the label that
-   has to keep saying "shaded relief, not albedo", so it stays on screen. */
+   has to keep saying "shaded relief, not albedo", so it stays on screen.
+
+   `left: 310px` is D10's, not the original: at `left: 148px` the sidebar
+   (x = 14 to 14+268+2·10 = 302, y from 88) painted over the left 154 px of this
+   panel, which is the one control whose text must stay readable. 310 is the
+   sidebar's right edge plus an 8 px gap, and it clears it at every width the
+   stylesheet answers to — at 564 px the panel's 250 px max-width ends at 560. */
 .ctl-ortho {
   top: 58px;
-  left: 148px;
+  left: 310px;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
@@ -421,3 +427,382 @@ main {
   font-size: 11px;
   opacity: 0.85;
 }
+
+/* ---- Focus visibility ------------------------------------------------------
+   Before this block the stylesheet had NO `:focus` rule and NO `outline` at
+   all, while five separate selectors reset the UA ring: `.ctl button`,
+   `.ctl-search input` and `.ctl-search [role="option"]` each do `all: unset`
+   (which unsets `outline` too), and so do `.card-close` and `.panel-retry`. Tab
+   reached every one of them; a keyboard user could not see which one had it.
+
+   The ring is two-tone on purpose. The chrome panels are dark in BOTH modes
+   (`rgba(12, 14, 20, 0.72)`), but the map host is cream `#efe9dc` in paper mode
+   and near-black `#05060a` in globe mode, and no single colour contrasts with
+   both: amber on cream is ~1.2:1, dark on the dark globe is worse. So the drawn
+   ring is amber against its own dark halo (high contrast either way) and the
+   halo is dark against the background — the standard double ring, which reads on
+   the sheet and on the void. `src/test/a11y.test.ts` pins these literals
+   and the fact that every reset selector above appears in this rule; the ring
+   cannot be quietly unset again.
+
+   `:focus-visible`, not `:focus`: the search input is focused programmatically
+   (the `/` key) and by clicks, and a mouse click on an option button should not
+   paint a ring. */
+:root {
+  --focus-ring: #ffd45e;
+  --focus-halo: rgba(5, 6, 10, 0.95);
+}
+.ctl button:focus-visible,
+.ctl-search input:focus-visible,
+.ctl-search [role="option"]:focus-visible,
+.card-close:focus-visible,
+.panel-retry:focus-visible,
+.credit-more summary:focus-visible,
+.panel-more summary:focus-visible,
+.card a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--focus-halo);
+}
+/* The map host is full-bleed, so an outset ring would sit outside the viewport.
+   Draw it inward instead. */
+.map-host:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: -3px;
+  box-shadow: inset 0 0 0 6px var(--focus-halo);
+}
+
+/* Text alternatives for screen readers only. The map canvas has no text a
+   browser can read, so the host's `aria-describedby` names this node; it must be
+   a SIBLING of the host, not a child, because Cesium owns that element's
+   children once the Viewer is built. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Reduced motion --------------------------------------------------------
+   Written with the universal selector so it covers chrome that does not exist
+   yet: a `transition` added here tomorrow is shortened the day it lands, and
+   `src/test/a11y.test.ts` asserts that coverage rather than counting today's
+   declarations.
+
+   What it CANNOT cover, stated instead of implied: the motion this product is
+   actually judged on is the Paper-Globe morph and the search fly-to — Cesium
+   camera tweens driven from the rAF clock, which no CSS rule reaches, and which
+   are therefore NOT reduced by this block. The real fix lives in
+   src/lib/cesium/morph.ts: `MORPH_SECONDS` (line 18) and the
+   `scene.morphTo2D/3D(MORPH_SECONDS)` calls (lines 120-121) plus `duration: 1.4`
+   in `flyToFeature` (line 555) would read
+   `window.matchMedia('(prefers-reduced-motion: reduce)')` and jump the tween
+   rather than shorten it. That file belongs to another agent in this wave. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.001ms !important;
+    transition-delay: 0s !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ==== Amendment 2, D10 + D9: the filter sidebar ==============================
+   APPENDED as a block, deliberately: the two `filter:` declarations on
+   `.map-host[data-mode=…] canvas` above are under measurement in a separate
+   change, and nothing here touches them.
+
+   Layout: the left column, under the mode toggle, x = 14 to 302 and y from 88.
+   The first version of this comment claimed that band covered no control; in a
+   browser it covered `.ctl-ortho`, which is why that panel now starts at 310. The
+   list is the reason for the other half of the block: as a flex child the filter
+   panel would not shrink, so the list was squeezed out of the clipped column
+   entirely — see `.filters`.
+
+   It is 268 px wide because a lunar feature name plus its descriptor needs that
+   much ("Promontorium Heraclides · Mons, montes · Ø 42 km"). Painted, with the
+   10 px padding on each side, it is 288 px.
+
+   Specificity: `.sidebar button` is (0,1,1) — the same weight as the existing
+   `.ctl button { all: unset }` — and wins only because it comes later in the
+   file. That is also why no rule here uses `all: unset`: `src/test/a11y.test.ts`
+   requires every selector that does to carry its own `:focus-visible` ring, and
+   the five that already do are not this change's to restate.
+
+   Focus: every control in the panel is a native `button`, `input` or `select`, so
+   the `button:focus-visible` / `input:focus-visible` rule above already rings the
+   first two. `select` was not in that list — it is added here, with the same
+   two-tone ring, because a `<select>` with the UA ring on a dark translucent
+   panel is a ring nobody can see. */
+.sidebar-toggle-wrap {
+  top: 52px;
+  left: 14px;
+  padding: 3px;
+}
+.sidebar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: #e8e8e8;
+  font-size: 12px;
+}
+.sidebar-toggle[aria-expanded='true'] {
+  background: rgba(255, 255, 255, 0.16);
+}
+.sidebar-badge {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(232, 232, 232, 0.16);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.sidebar {
+  top: 88px;
+  left: 14px;
+  width: 268px;
+  max-height: calc(100vh - 190px);
+  /* `.ctl` sets `display: flex` with a row gap of 2px; this panel is a column. */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 10px;
+  overflow: hidden;
+}
+select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--focus-halo);
+}
+.filters,
+.sidebar-list-head,
+.sidebar-list,
+.sidebar-empty {
+  width: 100%;
+}
+.filters-count {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.filter-group {
+  margin: 0;
+  padding: 0 0 0 8px;
+  border: 0;
+  border-left: 2px solid rgba(232, 232, 232, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.filter-group > legend {
+  padding: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.filter-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.filter-row > span:first-of-type {
+  flex: 1 1 auto;
+}
+.filter-count {
+  opacity: 0.6;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.filter-range {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  opacity: 0.8;
+}
+.filter-side {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.filter-hint {
+  margin: 1px 0 0;
+  font-size: 10px;
+  line-height: 1.3;
+  opacity: 0.65;
+}
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+.sidebar input[type='number'],
+.sidebar select {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 3px 5px;
+  border: 1px solid rgba(232, 232, 232, 0.28);
+  border-radius: 5px;
+  background: rgba(12, 14, 20, 0.9);
+  color: #e8e8e8;
+  font: 12px/1.3 system-ui, sans-serif;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.sidebar input[type='number'] {
+  width: 62px;
+}
+.sidebar input[type='range'] {
+  width: 100%;
+  accent-color: var(--focus-ring);
+}
+.filter-sort {
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 6px;
+}
+.filter-sort .filter-field {
+  flex: 1 1 auto;
+}
+.sidebar button,
+.filter-direction,
+.filter-clear {
+  box-sizing: border-box;
+  cursor: pointer;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #e8e8e8;
+  font-size: 11px;
+}
+.filter-direction {
+  padding: 4px 7px;
+  white-space: nowrap;
+}
+.filter-clear {
+  align-self: flex-start;
+  padding: 4px 9px;
+}
+.filter-clear:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.sidebar-list-head {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.3;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+.sidebar-capped {
+  display: block;
+  opacity: 0.85;
+}
+.sidebar-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  /* The scroll container, and the reason the panel can promise 400 rows without
+     pushing its own controls off screen. */
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 140px;
+  max-height: 42vh;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+/* The filter block is a flex child too, and a flex child's default `min-height:
+   auto` is its CONTENT height. Measured on a 1424 x 805 window: the filters want
+   ~700 px, the panel is capped at 633 px and clips with `overflow: hidden`, so the
+   filters refused to shrink, the list was squeezed to its floor, and its first row
+   sat at y = 863 — in the document, below the panel and below the fold, with no
+   scroller anywhere near it. `min-height: 0` is what lets the filters scroll
+   instead of winning that argument. */
+.filters {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.sidebar .sidebar-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 4px 6px;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+  color: #e8e8e8;
+}
+.sidebar .sidebar-row:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.sidebar .sidebar-row[aria-current='true'] {
+  background: rgba(255, 212, 94, 0.16);
+  box-shadow: inset 2px 0 0 var(--focus-ring);
+}
+.sidebar-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+.sidebar-meta {
+  font-size: 10px;
+  opacity: 0.68;
+}
+.sidebar-empty {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.8;
+}
+/* The combobox's honest footnote: a result the filters would not draw. */
+.res-filtered {
+  pointer-events: none;
+  margin: 3px 0 0;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: rgba(12, 14, 20, 0.72);
+  font-size: 10px;
+  line-height: 1.35;
+  opacity: 0.85;
+}
+/* A narrow viewport gets the panel as an overlay rather than a column beside the
+   map: at 564 px wide (the tab this project's screenshots were taken in) the 288 px
+   painted column covers 51 % of the canvas, which is not a sidebar, it is an
+   obstruction. Measured in `work/verify_sidebar.mjs`, not divided out of the CSS. */
+@media (max-width: 899px) {
+  .sidebar {
+    max-height: calc(100vh - 130px);
+    background: rgba(12, 14, 20, 0.92);
+  }
+  .sidebar-list {
+    max-height: 34vh;
+  }
+}
+

@@ -1,4 +1,5 @@
 import type { LayerName, Mode } from '@/types';
+import { FALLBACK_HOME_HEIGHT, globeFitHeightMeters } from '@/lib/cesium/moon';
 import { clampHeight } from '@/lib/cesium/morph';
 import type { CameraState } from '@/lib/cesium/morph';
 
@@ -25,16 +26,48 @@ export interface ViewState {
   feature?: string;
 }
 
+/** The fov the default framing assumes: Cesium's own 60° vertical default, the
+ *  same value `MoonMap.homeHeight` reads off a perspective frustum and falls
+ *  back to when the frustum has no fov (2D/orthographic). */
+const DEFAULT_FOV_RAD = Math.PI / 3;
+
+/**
+ * The height a URL that carries no camera gets, DERIVED rather than typed.
+ *
+ * It was `2.2e7` (22,000 km) — the framing gate G3 measured as defect 3: a
+ * ~110 px disc in a 564 × 786 canvas, most of the screen black. Amendment 2
+ * replaced it for the real HOME view by calling `globeFitHeightMeters` with the
+ * live canvas, but a hand-typed short link (`#0/0`, `#0/0/globe/photo`) still
+ * landed on the stale literal, because `parseHash` fills an absent height slot
+ * from `DEFAULT_VIEW.height`.
+ *
+ * A URL carries no viewport, so the honest input to that same function is the
+ * shape it documents as un-measurable: a square canvas at the default fov, which
+ * is exactly the case `moon.ts` exports `FALLBACK_HOME_HEIGHT` for. `src/test/
+ * urlState.test.ts` pins this constant against BOTH — the function and the
+ * fallback it must equal — plus against the semantic it is supposed to have (the
+ * limb of the disc sits at `HOME_MARGIN` of the half-field), so the value cannot
+ * be edited back to deep space without a test failing.
+ *
+ * Rounded to whole metres because `serializeHash` writes whole metres: this makes
+ * `DEFAULT_VIEW` its own fixed point under parse/serialize, which the two-way
+ * sync depends on.
+ */
+export const DEFAULT_HEIGHT = Math.round(
+  clampHeight(globeFitHeightMeters(1, 1, DEFAULT_FOV_RAD)),
+);
+
 /**
  * The whole-disc fallback view, and the string a bare `#` maps to. Deliberately
- * *not* the app's `HOME` (Mare Tranquillitatis at L5): a shared link that omits
- * the camera should show the map, not a random crater, and `MoonMap` keeps its
- * HOME behaviour for a hash that carried nothing (see `wasEmptyHash`).
+ * *not* the app's `HOME` (Mare Tranquillitatis at the fitted height): a shared
+ * link that omits the camera should show the map centred on the disc's middle,
+ * not a random crater, and `MoonMap` keeps its HOME behaviour for a hash that
+ * carried nothing (see `wasEmptyHash`).
  */
 export const DEFAULT_VIEW: ViewState = {
   lon: 0,
   lat: 0,
-  height: 2.2e7,
+  height: DEFAULT_HEIGHT,
   mode: 'globe',
   layer: 'photo',
 };
@@ -116,9 +149,10 @@ export function parseHash(hash: string): ViewState {
  * The mount path needs this distinction: with a malformed or empty hash the
  * viewer must keep its own HOME framing rather than being flown to
  * `DEFAULT_VIEW`, and the first sync tick then writes the real camera into the
- * URL. Comparing against `DEFAULT_VIEW` instead would make a hand-written
- * `#0/0/22000000/globe/photo` (a valid request for the default framing) look
- * empty, and would silently drop `#0/0` — so the test is "were lon/lat parsed".
+ * URL. Comparing against `DEFAULT_VIEW` instead would make a hand-written URL
+ * that spells the default framing out in full (which is exactly what
+ * `serializeHash(DEFAULT_VIEW)` produces) look empty, and would silently drop
+ * `#0/0` — so the test is "were lon/lat parsed".
  */
 export function wasEmptyHash(hash: string): boolean {
   const raw = (hash ?? '').replace(/^#/, '');

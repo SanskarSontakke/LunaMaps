@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
 import { createMoonViewer, globeFitHeightMeters, MOON_ELLIPSOID } from '@/lib/cesium/moon';
 import {
@@ -18,6 +18,7 @@ import { orthoLevels, orthoOnDisk, orthoProbePaths } from '@/lib/cesium/ortho';
 import { attemptMode, createModeLatch, type ModeAttempt } from '@/lib/cesium/modeLatch';
 import { attachPicking } from '@/lib/cesium/picking';
 import { measureMPerPx } from '@/lib/cesium/scaleProbe';
+import { deepestLevel } from '@/lib/scale';
 import { attachLabels, type LabelSet } from '@/lib/labels/entities';
 import { layerTop, loadManifest, probeAssets } from '@/lib/assets';
 import {
@@ -32,6 +33,15 @@ import {
 import NoAssets from './NoAssets';
 import ErrorPanel from './ErrorPanel';
 import { fuzzySearch } from '@/lib/search';
+import { validateFeatureCollection } from '@/lib/features';
+import {
+  admittedNames,
+  defaultFilters,
+  type FilterState,
+} from '@/lib/filters';
+import type { LabelFilter } from '@/lib/labels/entities';
+import Sidebar from './Sidebar';
+import type { SortState } from './FilterPanel';
 import { attachKeyboard } from '@/lib/keyboard';
 import {
   createUrlSync,
@@ -109,6 +119,21 @@ export interface MoonHarness {
    *  viewer's layer stack, never from the React state that asked for it. */
   orthoEnabled(): boolean;
   labelCount(): number;
+  /**
+   * How many NAMES the last label refresh left standing. This is the number the
+   * density slider and the declutter both move; `shownEntities` counts entities
+   * whose `show` is true, which also includes a traverse dot whose name lost its
+   * contest, so the two are not interchangeable.
+   */
+  shownLabels(): number;
+  /** The live D10 filter state, read through a ref (never a stale render). */
+  filters(): FilterState;
+  /**
+   * Set part of the filter state through the SAME setter a control uses, so a
+   * sweep drives the real path: sidebar list, combobox and map visibility all move
+   * together. There is deliberately no harness-only way to touch the label layer.
+   */
+  setFilters(next: Partial<FilterState>): void;
   shownEntities(): number;
   refreshLabels(heightM?: number): void;
   picked(): Feature | null;
@@ -190,6 +215,19 @@ const orthoAvailabilityOf = (
 };
 
 /**
+ * The deepest level the `ortho` overlay could serve, from the same
+ * envelope-filtered level list its provider's `maximumLevel` and the control's
+ * label are built from — or `null` when there is no record and nothing inside the
+ * envelope. This is a *capability*, not a statement that the overlay is attached;
+ * the caller only uses it while `overlayAttached` says the layer is in the stack.
+ */
+const overlayServedTop = (manifest: Manifest | null): number | null => {
+  const ortho = manifest?.layers.ortho;
+  if (!ortho) return null;
+  return deepestLevel(orthoLevels(ortho.availability, ortho.top));
+};
+
+/**
  * Shown when the morph had to be jump-cut at the deadline. The mode DID change,
  * so this is a status and not an error — but the animation the user asked for
  * never ran (a frame-starved tab), and reporting plain success would claim an
@@ -248,6 +286,38 @@ export default function MoonMap() {
   const featuresRef = useRef<FeatureCollection | null>(null);
   const selectedRef = useRef<Feature | null>(null);
   const [selected, setSelectedFeature] = useState<Feature | null>(null);
+  // ---- Amendment 2, D10 + D9: filters, the sidebar list, and label density ---
+  // ONE owner for the filter state, because three consumers have to agree on it:
+  // the sidebar's list, the combobox's result set, and which names the map draws.
+  // The model itself is pure and DOM-free (`src/lib/filters.ts`); this is only
+  // the React box it lives in.
+  const [filters, setFilters] = useState<FilterState>(defaultFilters);
+  const [sort, setSort] = useState<SortState>({ key: 'name', direction: 'asc' });
+  // Collapsed on the first render — the server's markup and the client's first
+  // paint must match, and `window` is not readable during render. `Sidebar`'s own
+  // effect opens it on a wide viewport.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // The names the filters keep, derived from the same `applyFilters` the list
+  // uses, so the map cannot show what the list refuses to name. `null` while
+  // there is no gazetteer, which the label layer reads as "no filter".
+  const admitted = useMemo(
+    () => (features ? admittedNames(features.features, filters) : null),
+    [features, filters],
+  );
+  const labelFilter = useMemo<LabelFilter>(
+    () => ({ names: admitted, density: filters.density }),
+    [admitted, filters.density],
+  );
+  // The postRender closure and the keyboard handler are built once, long before
+  // any of this exists, so they read the current filter through a ref that every
+  // render refreshes — the `applyModeAttemptRef` discipline, for the same reason.
+  const labelFilterRef = useRef<LabelFilter>(labelFilter);
+  labelFilterRef.current = labelFilter;
+  // The raw state, for the dev harness: the harness object is built once when the
+  // viewer is created, so a `() => filters` closure there would report the
+  // filters as of that render forever. This ref is what makes it live.
+  const filtersRef = useRef<FilterState>(filters);
+  filtersRef.current = filters;
   const [mode, setModeState] = useState<Mode>(DEFAULT_MODE);
   const [layer, setLayerState] = useState<LayerName>(DEFAULT_LAYER);
   // The deep-zoom overlay, off by default and opt-in from there. Two reasons,
@@ -263,6 +333,13 @@ export default function MoonMap() {
   // two different facts and only the second one makes the overlay safe to attach.
   // Default `true` because a manifest with no record never reaches the question.
   const [orthoHere, setOrthoHere] = useState(true);
+  // Is the overlay in the imagery stack RIGHT NOW? `orthoEnabled` is the intent
+  // and `orthoHere` the disk probe; this is the third fact, written from the
+  // live viewer after the attach call, because the scale readout's level ceiling
+  // has to follow the stack that actually serves pixels (it printed "L7 of L7"
+  // while `ortho` was delivering 10.4 m/px). Same rule the harness's
+  // `orthoEnabled()` already follows: read the stack, not the request.
+  const [overlayAttached, setOverlayAttached] = useState(false);
   // What the live viewer was built with and has since been *confirmed* at for
   // the layer (`setLayer` is synchronous, so the layer effect dedupes on it
   // directly). The mode half of that idea now lives in `modeLatch`.
@@ -291,6 +368,13 @@ export default function MoonMap() {
   const [modeNonce, setModeNonce] = useState(0);
   const [modeError, setModeError] = useState<string | null>(null);
   const [modeNotice, setModeNotice] = useState<string | null>(null);
+  // `/` while the gazetteer is missing: `SearchBox` renders a `disabled` input
+  // then, so `focus()` on it is a silent no-op — the key did nothing and nothing
+  // said so. One line inside the note that is already on screen says which it
+  // was, and it lives in that note rather than in a new panel because the note IS
+  // the explanation and two `.ctl-note` elements share the same bottom-left slot.
+  const [searchNudge, setSearchNudge] = useState<string | null>(null);
+  const searchNudgeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [readout, setReadout] = useState<ReadoutState>({
     mPerPx: null,
     latDeg: HOME.latDeg,
@@ -371,6 +455,24 @@ export default function MoonMap() {
       selectFeature(f);
     },
     [selectFeature],
+  );
+
+  // ---- D10 control callbacks -------------------------------------------------
+  // Every one is a stable `useCallback`, because `Sidebar` is memoised and the
+  // scale readout re-renders this component up to 8 Hz: an inline arrow would
+  // re-render 400 list rows on every frame of a fly-to, which is a stutter the
+  // map used not to have.
+  const openSidebar = useCallback((next: boolean) => setSidebarOpen(next), []);
+  const changeFilters = useCallback((next: FilterState) => setFilters(next), []);
+  const changeSort = useCallback((next: SortState) => setSort(next), []);
+  /** Clears everything, density included: the button is only disabled when
+   *  nothing is off-default, so a density-only change must still be clearable. */
+  const clearFilters = useCallback(() => setFilters(defaultFilters()), []);
+  /** The combobox's query, mirrored into the filter state so the sidebar list
+   *  narrows with the search box rather than beside it. */
+  const changeQuery = useCallback(
+    (next: string) => setFilters((prev) => ({ ...prev, query: next })),
+    [],
   );
 
   // One owner for every mode request: the toggle click, the 1/2 keys, and any
@@ -522,6 +624,17 @@ export default function MoonMap() {
   const retryBoot = useCallback(() => setBootNonce((n) => n + 1), []);
   const retryAttach = useCallback(() => setAttachNonce((n) => n + 1), []);
 
+  /** The `/` shortcut's honest failure report: the field cannot take focus while
+   *  the gazetteer is missing, so the live note says that instead of the key
+   *  doing nothing. Self-clearing, because a standing echo of one keypress would
+   *  be its own noise — and it never has to be cleared by hand when a later
+   *  retry loads the names for real. */
+  const reportSearchUnavailable = useCallback(() => {
+    setSearchNudge('Pressing / did nothing: there are no place names to search.');
+    if (searchNudgeTimer.current) clearTimeout(searchNudgeTimer.current);
+    searchNudgeTimer.current = setTimeout(() => setSearchNudge(null), 8_000);
+  }, []);
+
   // The viewer is created only after the manifest has loaded and validated,
   // so `top` is real and a broken build fails in the panel below, not in a
   // half-rendered Cesium scene.
@@ -670,12 +783,26 @@ export default function MoonMap() {
         // needs to be able to tell "we asked" from "it is attached".
         orthoEnabled: () => orthoOverlayEnabled(viewer),
         labelCount: () => labelsRef.current?.count ?? 0,
+        /** How many NAMES the last refresh left standing (density, filters and
+         *  declutter all gate this; the traverse dots are counted separately by
+         *  `shownEntities`, which reads the live `show` flags). */
+        shownLabels: () => labelsRef.current?.shown ?? -1,
         shownEntities: () =>
           viewer.isDestroyed()
             ? -1
             : viewer.entities.values.filter((e) => e.show).length,
         refreshLabels: (heightM?: number) =>
-          labelsRef.current?.refresh(heightM ?? getCameraState(viewer).height),
+          labelsRef.current?.refresh(
+            heightM ?? getCameraState(viewer).height,
+            labelFilterRef.current,
+          ),
+        /** Read or set the D10 filter state from a sweep, without a DOM. Setting
+         *  it goes through the same `setFilters` a control uses, so the sidebar,
+         *  the combobox and the map all move together — there is no harness-only
+         *  back door into the label layer. */
+        filters: () => filtersRef.current,
+        setFilters: (next: Partial<FilterState>) =>
+          setFilters((prev) => ({ ...prev, ...next })),
         picked: () => pickedRef.current,
         // Task 18 sweep helpers: drive search and the card without a DOM.
         search: (q: string) =>
@@ -772,6 +899,12 @@ export default function MoonMap() {
     } else {
       disableOrthoOverlay(viewer);
     }
+    // The readout's ceiling has to say what the stack does, so it is written from
+    // the stack: `enableOrthoOverlay` can still refuse a block the envelope
+    // empties, and a refused attach must not leave the panel advertising a depth
+    // the viewer never got. `orthoOverlayEnabled` is the same live read the
+    // harness's `orthoEnabled()` uses.
+    setOverlayAttached(!viewer.isDestroyed() && orthoOverlayEnabled(viewer));
     // Every value this effect reads is a dependency already: `viewerRef` is a
     // ref, `orthoAvailabilityOf`/`enableOrthoOverlay`/`disableOrthoOverlay` are
     // module scope, so this array is complete and fixed-length like the others.
@@ -918,10 +1051,26 @@ export default function MoonMap() {
         if (!r.ok) throw new Error(`features.json HTTP ${r.status}`);
         return r.json();
       })
-      .then((fc: FeatureCollection) => {
+      // The parsed body is `unknown` until every field a consumer reads has
+      // passed a predicate (src/lib/features.ts): coordinates `labels/entities.ts`
+      // hands to Cesium, `tier` that `search.ts` ranks on, and the `url` that
+      // becomes the card's only `<a href>`. A gazetteer that fails is treated
+      // exactly like a missing one — the status note below, no labels, no search —
+      // rather than half-accepted, because a subset of names would render as a
+      // complete map and a non-https link would render as a safe one.
+      .then((json: unknown) => {
         if (!alive) return;
-        featuresRef.current = fc;
-        setFeatures(fc);
+        const result = validateFeatureCollection(json);
+        if (!result.ok) {
+          if (process.env.NODE_ENV === 'development') {
+            console.warn(`[features] ${result.reason}; place names are off`);
+          }
+          featuresRef.current = null;
+          setFeatures(null);
+          return;
+        }
+        featuresRef.current = result.value;
+        setFeatures(result.value);
       })
       .catch(() => {
         if (alive) {
@@ -955,14 +1104,14 @@ export default function MoonMap() {
     let failure: BootErrorState | null = null;
     try {
       labels = attachLabels(viewer, features);
-      labels.refresh(getCameraState(viewer).height);
+      labels.refresh(getCameraState(viewer).height, labelFilterRef.current);
       let last = 0;
       onPostRender = () => {
         const t = Date.now();
         if (t - last < 125) return; // throttle to 8 Hz
         last = t;
         if (!viewer.isDestroyed()) {
-          labels?.refresh(getCameraState(viewer).height);
+          labels?.refresh(getCameraState(viewer).height, labelFilterRef.current);
           updateReadout(viewer);
         }
       };
@@ -1005,6 +1154,20 @@ export default function MoonMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [features, manifest, selectFeature, attachNonce]);
 
+  // A filter change has to reach the MAP immediately. The viewer runs with
+  // `requestRenderMode`, so the 8 Hz postRender refresh only fires on a frame, and
+  // ticking a checkbox is not a camera move — without this the list would update
+  // and the canvas would keep drawing the old set until the next pan. Reading the
+  // camera height rather than caching one keeps this the same call the frame path
+  // makes.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    const labels = labelsRef.current;
+    if (!viewer || viewer.isDestroyed() || !labels) return;
+    labels.refresh(getCameraState(viewer).height, labelFilterRef.current);
+    viewer.scene.requestRender();
+  }, [labelFilter]);
+
   // Keyboard navigation, attached to the window (the canvas never holds focus,
   // and a document-level listener would fight Cesium's own handlers). Keys are
   // inert while a text field has focus, so typing in the search box moves the
@@ -1016,33 +1179,69 @@ export default function MoonMap() {
     keyboardRef.current = attachKeyboard(window, viewer, {
       afterMove: () => {
         if (viewer.isDestroyed()) return;
-        labelsRef.current?.refresh(getCameraState(viewer).height);
+        labelsRef.current?.refresh(
+          getCameraState(viewer).height,
+          labelFilterRef.current,
+        );
         // Immediate, so a single keypress is visible even when it lands inside
         // the 125 ms postRender throttle window of a one-shot move.
         updateReadout(viewer);
       },
       setMode: (m) => requestModeChange(m),
-      focusSearch: () => document.getElementById(SEARCH_INPUT_ID)?.focus(),
+      // A disabled field refuses focus, and `focus()` on one is a no-op that
+      // reports nothing. So: focus it when it can take focus, and say plainly
+      // that it cannot when it cannot — never the silent half of either.
+      focusSearch: () => {
+        const field = document.getElementById(SEARCH_INPUT_ID);
+        if (field instanceof HTMLInputElement && !field.disabled) field.focus();
+        else reportSearchUnavailable();
+      },
       close: () => selectFeature(null),
     });
     return () => {
       keyboardRef.current?.();
       keyboardRef.current = null;
+      if (searchNudgeTimer.current) clearTimeout(searchNudgeTimer.current);
     };
-  }, [manifest, requestModeChange, selectFeature, updateReadout]);
+  }, [
+    manifest,
+    requestModeChange,
+    selectFeature,
+    updateReadout,
+    reportSearchUnavailable,
+  ]);
 
   return (
     <>
       {/* `sceneMode`, not `mode`: the tint has to match what the scene actually
           reached. Task 10 round 2 established that `mode` is the last one clicked
           and `sceneMode` is the confirmed one — binding the paper sheet to the
-          intent would paint a warm map under a scene whose morph failed. */}
+          intent would paint a warm map under a scene whose morph failed.
+
+          THE LABELLED REGION. This div held a WebGL canvas and nothing else: no
+          `role`, no name, no text alternative, so a screen reader met the whole
+          product as an unlabelled group with no content. It is now a named region
+          that is focusable (the keyboard controls are on the window, so a tab
+          stop is the only way to reach the map at all) and described by the
+          sibling paragraph below — a sibling, never a child, because Cesium owns
+          the host's children from the moment the Viewer is built. */}
       <div
         ref={hostRef}
         id="cesiumContainer"
         className="map-host"
         data-mode={sceneMode}
+        role="region"
+        aria-label="Moon map"
+        aria-describedby="map-intro"
+        tabIndex={0}
       />
+      <p id="map-intro" className="sr-only">
+        An interactive map of the Moon: baked NASA imagery with 1,585 IAU
+        Gazetteer place names. Drag to pan and scroll to zoom, or use the
+        keyboard — arrow keys pan, plus and minus zoom, q and e rotate, 1 gives
+        the flat paper view, 2 the globe, slash searches place names, and Escape
+        closes the feature card.
+      </p>
       {manifest && (
         <div className="ui">
           {/* The toggle reports the mode the SCENE is in, not the one last
@@ -1064,12 +1263,39 @@ export default function MoonMap() {
             enabled={orthoEnabled}
             onToggle={setOrthoEnabled}
           />
-          <SearchBox features={features} onChoose={goToFeature} />
-          <ScaleReadout readout={readout} top={topOf(manifest, layer)} />
+          {/* D10: the filters, the live list, and the density slider. It sits in
+              the left column under the overlay control because it is the one
+              control that changes what the whole map shows. */}
+          <Sidebar
+            features={features ? features.features : null}
+            filters={filters}
+            sort={sort}
+            selectedName={selected ? selected.properties.name : null}
+            open={sidebarOpen}
+            onToggle={openSidebar}
+            onFiltersChange={changeFilters}
+            onSortChange={changeSort}
+            onClearFilters={clearFilters}
+            onChoose={goToFeature}
+          />
+          <SearchBox
+            features={features}
+            onChoose={goToFeature}
+            filters={filters}
+            onQueryChange={changeQuery}
+          />
+          <ScaleReadout
+            readout={readout}
+            top={topOf(manifest, layer)}
+            overlayTop={overlayAttached ? overlayServedTop(manifest) : null}
+          />
           {!features && (
+            // `role="status"` is a polite live region: changing this text is how
+            // the `/` shortcut reports itself when it cannot do its job, which is
+            // why the nudge is interpolated here instead of being another panel.
             <div className="ctl ctl-note" role="status">
-              Place names unavailable — search and labels are off; the map still
-              works.
+              {'Place names unavailable — search and labels are off; the map still works.'}
+              {searchNudge ? ` ${searchNudge}` : ''}
             </div>
           )}
           {modeNotice && (

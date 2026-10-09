@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  FALLBACK_HOME_HEIGHT,
+  HOME_MARGIN,
+  MOON_RADIUS_M,
+  globeFitHeightMeters,
+} from '@/lib/cesium/moon';
+import {
+  DEFAULT_HEIGHT,
   DEFAULT_VIEW,
   HASH_SYNC_MS,
   createUrlSync,
@@ -9,6 +16,13 @@ import {
   wasEmptyHash,
   type ViewState,
 } from '@/lib/urlState';
+
+const FOV60 = Math.PI / 3;
+/** The string the default view writes, and therefore the number a hand-typed
+ *  whole-disc link has to carry. Derived here rather than typed, so this file
+ *  cannot be the place a stale literal comes back to life. */
+const DEFAULT_HASH = serializeHash(DEFAULT_VIEW);
+const DEFAULT_HEIGHT_STRING = String(DEFAULT_HEIGHT);
 
 // The five cases the plan pins verbatim, then the anti-loop machinery that only
 // looks safe until a hashchange listener is wired to it.
@@ -52,11 +66,16 @@ describe('parseHash details', () => {
     expect(parseHash('#0/0/1/globe/photo').height).toBe(1_500);
     expect(parseHash('#0/95/100000/globe/photo').lat).toBe(89.9999);
   });
-  it('accepts the plan\'s canonical default URL', () => {
-    expect(parseHash('#0/0/22000000/globe/photo')).toEqual({
-      lon: 0, lat: 0, height: 2.2e7, mode: 'globe', layer: 'photo',
-      feature: undefined,
-    });
+  it('accepts a hand-typed default-framing URL as its own fixed point', () => {
+    // Amendment 2 retired `#0/0/22000000/globe/photo` as the canonical whole-disc
+    // link: the canonical default is now whatever `DEFAULT_VIEW` derives, and a
+    // URL that spells that framing out must read back as exactly the view it came
+    // from — including through the integer-metre write of `serializeHash`.
+    expect(parseHash(DEFAULT_HASH)).toEqual({ ...DEFAULT_VIEW, feature: undefined });
+    expect(serializeHash(parseHash(DEFAULT_HASH))).toBe(DEFAULT_HASH);
+    expect(parseHash(`#0/0/${DEFAULT_HEIGHT_STRING}/globe/photo`).height).toBe(
+      DEFAULT_HEIGHT,
+    );
   });
   it('restores a paper-mode, paper-layer view', () => {
     const p = parseHash('#-12.5/45.25/500000/paper/paper');
@@ -80,19 +99,79 @@ describe('parseHash details', () => {
   it('treats an absent height as the default, not as 0', () => {
     expect(parseHash('#0/0/globe/photo').height).toBe(DEFAULT_VIEW.height);
     expect(parseHash('#10/10/globe/photo').height).toBe(DEFAULT_VIEW.height);
+    // A two-segment link has no height slot at all: `globe` is not a number.
+    expect(parseHash('#0/0').height).toBe(DEFAULT_VIEW.height);
   });
   it('does not hand out the DEFAULT_VIEW object itself', () => {
     const p = parseHash('');
     expect(p).not.toBe(DEFAULT_VIEW);
+    const before = DEFAULT_VIEW.height;
     p.height = 1;
-    expect(DEFAULT_VIEW.height).toBe(2.2e7);
+    expect(DEFAULT_VIEW.height).toBe(before);
   });
   it('reports whether a hash carried any state of its own', () => {
     expect(wasEmptyHash('')).toBe(true);
     expect(wasEmptyHash('#')).toBe(true);
-    expect(wasEmptyHash('#0/0/22000000/globe/photo')).toBe(false);
+    expect(wasEmptyHash(DEFAULT_HASH)).toBe(false);
     // Malformed input is empty input: the default view renders, no fly-to.
     expect(wasEmptyHash('#garbage/here')).toBe(true);
+  });
+});
+
+/**
+ * The default framing amendment 2 recorded as a bug, and the oracle that could
+ * not catch it.
+ *
+ * `src/test/urlState.test.ts` used to assert `parseHash(...).height ===
+ * DEFAULT_VIEW.height` for the fallback, which is true for every value of that
+ * constant including 0 and 1e30, and it used to pin the literal `2.2e7` — the
+ * deep-space framing that put a ~110 px disc on screen. So the pair could only
+ * ever agree with itself. What is asserted instead is the DERIVATION: the
+ * default is the height `globeFitHeightMeters` — the function `MoonMap` uses for
+ * the real HOME view — gives for the case `moon.ts` exports a fallback for, and
+ * it puts the disc's limb where the home margin says it belongs.
+ */
+describe('the default framing is derived, not typed', () => {
+  it('is the same function MoonMap uses for HOME, on the un-measurable canvas', () => {
+    // A URL carries no viewport, so the square canvas is the shape whose answer
+    // `moon.ts` documents as the fallback. Any square size gives it: the function
+    // depends on the aspect ratio, not on the pixel count.
+    expect(DEFAULT_HEIGHT).toBe(Math.round(globeFitHeightMeters(1, 1, FOV60)));
+    expect(globeFitHeightMeters(900, 900, FOV60)).toBe(
+      globeFitHeightMeters(1, 1, FOV60),
+    );
+    expect(DEFAULT_VIEW.height).toBe(DEFAULT_HEIGHT);
+  });
+  it('equals the exported fallback height, to the metre it writes', () => {
+    expect(DEFAULT_HEIGHT).toBe(Math.round(FALLBACK_HOME_HEIGHT));
+    expect(Math.abs(DEFAULT_HEIGHT - FALLBACK_HOME_HEIGHT)).toBeLessThan(1);
+  });
+  it('frames the whole disc: the limb sits at the home margin of the half-field', () => {
+    // The semantic the number exists for. `2.2e7` fails this by a factor of ~8 in
+    // angular radius, which is what made a hand-typed short link show a postage
+    // stamp — so the derivation is pinned by what it must LOOK like, not by a
+    // literal that can be retyped.
+    const limbRadians = (h: number) =>
+      Math.asin(MOON_RADIUS_M / (MOON_RADIUS_M + h));
+    expect(limbRadians(DEFAULT_VIEW.height)).toBeCloseTo(
+      HOME_MARGIN * (FOV60 / 2),
+      3,
+    );
+    expect(limbRadians(2.2e7)).toBeLessThan(HOME_MARGIN * (FOV60 / 2) / 2);
+  });
+  it('is a whole-disc height, not a deep-space one', () => {
+    expect(DEFAULT_VIEW.height).toBeLessThan(3e6);
+    expect(DEFAULT_VIEW.height).toBeGreaterThan(1.5e6);
+    // The bug this replaces, stated so it cannot be mistaken for a rounding.
+    expect(DEFAULT_VIEW.height).not.toBe(2.2e7);
+  });
+  it('a short hand-typed link lands on the derived framing', () => {
+    // Compared against the FUNCTION, not against `DEFAULT_HEIGHT`, or this would
+    // be the same self-agreeing oracle the old test was.
+    const derived = Math.round(globeFitHeightMeters(1, 1, FOV60));
+    for (const hash of ['#0/0', '#0/0/globe/photo', '#', '', '#nonsense']) {
+      expect(parseHash(hash).height).toBe(derived);
+    }
   });
 });
 
@@ -178,7 +257,7 @@ describe('createUrlSync', () => {
     const doc = fakeDocument();
     const sync = createUrlSync({ ...doc, now: () => 0 });
     expect(sync.tick(v({ lon: 12 }))).toBe(true);
-    expect(doc.state.hash).toBe('#12.00000/0.00000/22000000/globe/photo');
+    expect(doc.state.hash).toBe(`#12.00000/0.00000/${DEFAULT_HEIGHT_STRING}/globe/photo`);
   });
   it('never writes when the serialised string already matches', () => {
     const doc = fakeDocument(serializeHash(v({ lon: 12 })));
@@ -247,7 +326,9 @@ describe('createUrlSync', () => {
     const sync = createUrlSync({ ...doc, now: () => 0 });
     expect(sync.tick(v({ lon: 7 }))).toBe(true);
     expect(sync.flush(v({ lon: 7, feature: 'Tycho' }))).toBe(true);
-    expect(doc.state.hash).toBe('#7.00000/0.00000/22000000/globe/photo/Tycho');
+    expect(doc.state.hash).toBe(
+      `#7.00000/0.00000/${DEFAULT_HEIGHT_STRING}/globe/photo/Tycho`,
+    );
     // Re-flushing the same view (a double click on the same result) is a no-op.
     expect(sync.flush(v({ lon: 7, feature: 'Tycho' }))).toBe(false);
     expect(doc.state.writes).toBe(2);
@@ -256,7 +337,7 @@ describe('createUrlSync', () => {
     const doc = fakeDocument(serializeHash({ ...DEFAULT_VIEW, feature: 'Tycho' }));
     const sync = createUrlSync({ ...doc, now: () => 0 });
     expect(sync.flush(DEFAULT_VIEW)).toBe(true);
-    expect(doc.state.hash).toBe('#0.00000/0.00000/22000000/globe/photo');
+    expect(doc.state.hash).toBe(DEFAULT_HASH);
     expect(parseHash(doc.state.hash).feature).toBeUndefined();
   });
   it('lastWritten reports what this instance put there, for its own hashchange guard', () => {
@@ -290,7 +371,7 @@ describe('createUrlSync', () => {
     expect(doc.state.writes).toBe(1);
   });
   it('stops writing once the document no longer exists (teardown)', () => {
-    const readHash = vi.fn(() => '#0/0/22000000/globe/photo');
+    const readHash = vi.fn(() => '#0/0/100000/globe/photo');
     const write = vi.fn();
     const sync = createUrlSync({ readHash, write, now: () => 0 });
     sync.flush(v({ lon: 5 }));

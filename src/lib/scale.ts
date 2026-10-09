@@ -67,3 +67,49 @@ export function levelForMPerPx(value: number, top: number): number | null {
   }
   return best;
 }
+
+/**
+ * The deepest level of a served-level list, or `null` for an empty one.
+ *
+ * Written as a fold rather than `Math.max(...levels)` on the caller's assumption
+ * that the list is sorted: the ceiling the readout advertises has to be right for
+ * a list in any order, and `null` has to be the answer for the empty case so the
+ * caller cannot mistake "no deep layer" for "level 0".
+ */
+export function deepestLevel(levels: readonly number[]): number | null {
+  if (levels.length === 0) return null;
+  let deepest = levels[0];
+  for (const level of levels) if (level > deepest) deepest = level;
+  return Number.isInteger(deepest) && deepest >= 0 ? deepest : null;
+}
+
+/**
+ * The level ceiling the scale readout is allowed to name.
+ *
+ * `top` on its own is the *base* pyramid's ceiling. When the `ortho` overlay is
+ * attached the pixels on screen come from a deeper layer, so clamping the level
+ * to the base top printed "L7 of L7" at the overlay's 10.4 m/px: an honest m/px
+ * under a false ceiling claim. The ceiling therefore follows the stack that is
+ * actually serving, and `attachedOverlayTop` is the caller's answer to "is the
+ * overlay attached, and how deep does it go" — `null` for both "not asked for"
+ * and "asked for but refused" (no record, nothing inside the envelope, or the
+ * recorded tiles not on this machine).
+ *
+ * Never lower than the base top: an attached overlay can only add depth, and a
+ * readout whose ceiling dropped below the base's own would be a new lie.
+ */
+export function stackTop(
+  baseTop: number,
+  attachedOverlayTop: number | null | undefined,
+): number {
+  if (!Number.isInteger(baseTop) || baseTop < 0) return baseTop;
+  if (
+    attachedOverlayTop === null ||
+    attachedOverlayTop === undefined ||
+    !Number.isInteger(attachedOverlayTop) ||
+    attachedOverlayTop < 0
+  ) {
+    return baseTop;
+  }
+  return Math.max(baseTop, attachedOverlayTop);
+}

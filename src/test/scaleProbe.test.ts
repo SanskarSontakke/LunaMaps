@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import * as Cesium from 'cesium';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { measureMPerPx, PROBE_D_LON_DEG } from '@/lib/cesium/scaleProbe';
 import { MOON_ELLIPSOID, MOON_RADIUS_M } from '@/lib/cesium/moon';
 import { cameraHeightForLevel, mPerPx } from '@/lib/grid';
-import { alongParallelMeters } from '@/lib/scale';
+import { alongParallelMeters, deepestLevel, levelForMPerPx, stackTop } from '@/lib/scale';
+import ScaleReadout from '@/components/ScaleReadout';
 
 const VIEWPORT_PX = 900;
 const FOV_DEG = 60;
@@ -156,5 +160,145 @@ describe('measureMPerPx on an equirectangular grid (paper mode shape)', () => {
   it('returns null when the two points land on the same pixel', () => {
     const frozen = () => ({ x: 42, y: 42 });
     expect(measureMPerPx(centre(), frozen)).toBeNull();
+  });
+});
+
+/**
+ * The part of the readout the probe does not decide: which LEVEL the panel is
+ * allowed to name.
+ *
+ * `mPerPx` is measured, so it was always honest. The ceiling next to it was not:
+ * `ScaleReadout` clamped through the BASE layer's manifest top, so with the
+ * `ortho` overlay delivering 10.4 m/px over a base that stops at L7 it printed
+ * "L7 of L7" — a level claim about a stack that was not there. The three states
+ * below are the three the app can be in, and each is asserted on the rendered
+ * markup rather than on a helper's return value, because the bug lived in what
+ * the user reads.
+ */
+const readoutAt = (metresPerPixel: number) => ({
+  mPerPx: metresPerPixel,
+  latDeg: 0.6746,
+  lonDeg: 23.4731,
+});
+
+/** The `Lx of Ly` span the panel renders, with the tabular lat/lon span removed. */
+const levelText = (html: string) => {
+  const meta = /<div class="scale-meta">([\s\S]*?)<\/div>/.exec(html);
+  const spans = meta ? [...meta[1].matchAll(/<span>([^<]*)<\/span>/g)] : [];
+  return spans.map((s) => s[1]).join(' | ');
+};
+
+describe('the level ceiling follows the stack that serves the pixels', () => {
+  const BASE_TOP = 7;
+  const DEEP_TOP = 10;
+
+  it('names L10 of L10 when the deep overlay is attached and resolving', () => {
+    const html = renderToStaticMarkup(
+      ScaleReadout({
+        readout: readoutAt(mPerPx(DEEP_TOP)),
+        top: BASE_TOP,
+        overlayTop: DEEP_TOP,
+      }),
+    );
+    expect(levelText(html)).toContain('L10 of L10');
+    // The claim the whole finding is about: the base's ceiling must not survive
+    // as the advertised one while the overlay is what paints.
+    expect(html).not.toContain('of L7');
+  });
+
+  it('still says L7 of L7 with the overlay off', () => {
+    const html = renderToStaticMarkup(
+      ScaleReadout({
+        readout: readoutAt(mPerPx(BASE_TOP)),
+        top: BASE_TOP,
+        overlayTop: null,
+      }),
+    );
+    expect(levelText(html)).toContain('L7 of L7');
+  });
+
+  it('says L7 of L7 when the overlay was asked for but is not on this machine', () => {
+    // The caller's third state arrives as the same `null`: nothing deeper is in
+    // the stack, so nothing deeper may be advertised. The MoonMap side of that
+    // pairing is asserted from the source below, because the disk probe is not
+    // something this environment can run.
+    const html = renderToStaticMarkup(
+      ScaleReadout({
+        readout: readoutAt(mPerPx(DEEP_TOP)),
+        top: BASE_TOP,
+        overlayTop: null,
+      }),
+    );
+    expect(levelText(html)).toContain('L7 of L7');
+    expect(html).toContain('10 m/px'); // the m/px stays the measured one
+  });
+
+  it('keeps the deep ceiling while the camera is only resolving the base', () => {
+    // "of N" is a ceiling, not a promise about the tile under the cursor: inside
+    // the recorded boxes the stack does reach L10, so naming it while the current
+    // level is L5 is the honest reading of the attached overlay.
+    const html = renderToStaticMarkup(
+      ScaleReadout({
+        readout: readoutAt(mPerPx(5)),
+        top: BASE_TOP,
+        overlayTop: DEEP_TOP,
+      }),
+    );
+    expect(levelText(html)).toContain('L5 of L10');
+  });
+
+  it('is derived from the measurement, not from a level the manifest never baked', () => {
+    // The clamp is still a clamp: an absurd m/px cannot name a level past the
+    // ceiling the caller supplied.
+    expect(levelForMPerPx(mPerPx(DEEP_TOP), BASE_TOP)).toBe(7);
+    expect(levelForMPerPx(mPerPx(DEEP_TOP), DEEP_TOP)).toBe(10);
+    expect(levelForMPerPx(mPerPx(0), DEEP_TOP)).toBe(0);
+  });
+});
+
+describe('stackTop / deepestLevel: the two rules the ceiling is built from', () => {
+  it('an absent or refused overlay leaves the base ceiling alone', () => {
+    for (const none of [null, undefined]) expect(stackTop(7, none)).toBe(7);
+    // A non-integer or negative overlay depth is not a depth, and must not become
+    // a ceiling the readout cannot reach.
+    for (const bad of [NaN, 1.5, -1, Infinity]) expect(stackTop(7, bad)).toBe(7);
+  });
+  it('an attached overlay can only raise the ceiling, never lower it', () => {
+    expect(stackTop(7, 10)).toBe(10);
+    expect(stackTop(7, 7)).toBe(7);
+    expect(stackTop(7, 3)).toBe(7);
+    expect(stackTop(7, 0)).toBe(7);
+  });
+  it('the deepest level of a served list, in any order, and null for none', () => {
+    expect(deepestLevel([8, 9, 10])).toBe(10);
+    expect(deepestLevel([10, 8, 9])).toBe(10);
+    expect(deepestLevel([7])).toBe(7);
+    expect(deepestLevel([])).toBeNull();
+    expect(deepestLevel([1.5])).toBeNull();
+    expect(deepestLevel([-2])).toBeNull();
+  });
+});
+
+describe('MoonMap feeds the ceiling from the live stack', () => {
+  const src = readFileSync(
+    resolve(__dirname, '../components/MoonMap.tsx'),
+    'utf8',
+  );
+
+  it('passes overlayTop, and only while the overlay is attached', () => {
+    expect(src).toMatch(
+      /overlayTop=\{overlayAttached \? overlayServedTop\(manifest\) : null\}/,
+    );
+  });
+  it('writes that flag from the viewer’s own layer stack, not from the intent', () => {
+    // `orthoEnabled` is what the user asked for; `orthoOverlayEnabled(viewer)` is
+    // what the stack holds, and a refused attach must not raise the ceiling.
+    expect(src).toMatch(/setOverlayAttached\(!viewer\.isDestroyed\(\) && orthoOverlayEnabled\(viewer\)\)/);
+    expect(src).toMatch(/const \[overlayAttached, setOverlayAttached\] = useState\(false\)/);
+  });
+  it('derives the served depth from the same envelope-filtered level list', () => {
+    // The provider's `maximumLevel`, the control's label and the readout's ceiling
+    // must not each hold their own idea of how deep `ortho` goes.
+    expect(src).toMatch(/deepestLevel\(orthoLevels\(ortho\.availability, ortho\.top\)\)/);
   });
 });

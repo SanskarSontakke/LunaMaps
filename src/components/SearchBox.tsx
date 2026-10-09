@@ -1,6 +1,12 @@
 'use client';
 import { useId, useMemo, useRef, useState } from 'react';
 import { fuzzySearch } from '@/lib/search';
+import {
+  admittedNames,
+  hasActiveMapFilter,
+  mapFilters,
+  type FilterState,
+} from '@/lib/filters';
 import type { Feature, FeatureCollection } from '@/types';
 
 /** The keyboard `/` shortcut focuses the input with this id (see
@@ -13,15 +19,36 @@ export const SEARCH_INPUT_ID = 'moon-search-input';
  * Combobox pattern: the input carries `aria-expanded` / `aria-controls` /
  * `aria-activedescendant`, the results are a listbox of `role="option"`
  * buttons, and ArrowUp/ArrowDown/Enter/Escape drive it from the keyboard.
+ *
+ * D10 wiring: the query is the SAME string the sidebar list narrows on, so it is
+ * lifted into `FilterState` when a parent provides one (`filters` +
+ * `onQueryChange`) and kept locally when nobody does — every existing caller and
+ * test renders this with just `features` and `onChoose`, and that path is
+ * unchanged. The combobox still searches the WHOLE gazetteer, because a filter is
+ * a view and a search is a question; what it does now is say so, naming how many
+ * of its own answers the active filters would not draw. A result that silently
+ * vanished behind a filter is the "filtering is silently empty" failure in the
+ * other direction.
  */
 export default function SearchBox({
   features,
   onChoose,
+  filters,
+  onQueryChange,
 }: {
   features: FeatureCollection | null;
   onChoose: (feature: Feature) => void;
+  /** The lifted filter state. Absent means "this box owns its own query". */
+  filters?: FilterState;
+  onQueryChange?: (next: string) => void;
 }) {
-  const [query, setQuery] = useState('');
+  const [localQuery, setLocalQuery] = useState('');
+  const controlled = filters !== undefined;
+  const query = controlled ? filters.query : localQuery;
+  const writeQuery = (next: string) => {
+    if (controlled) onQueryChange?.(next);
+    else setLocalQuery(next);
+  };
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -37,14 +64,32 @@ export default function SearchBox({
     [query, features],
   );
 
+  /** How many of these the D10 filters would keep off the map. Computed from the
+   *  same `admittedNames` the canvas is handed, so the number and the map cannot
+   *  disagree — and from the map-visible half of the state, so it never counts
+   *  this box's own query as a filter. */
+  const hiddenByFilters = useMemo(() => {
+    if (!features || !filters || !hasActiveMapFilter(filters)) return 0;
+    const allowed = admittedNames(features.features, mapFilters(filters));
+    return results.filter((f) => !allowed.has(f.properties.name)).length;
+  }, [features, filters, results]);
+
   const choose = (feature: Feature | undefined) => {
     if (!feature) return;
     onChoose(feature);
-    setQuery(feature.properties.name);
+    writeQuery(feature.properties.name);
     setOpen(false);
     setActive(-1);
     inputRef.current?.blur();
   };
+
+  /** The listbox is in the document only while it is rendered, and
+   *  `aria-controls` / `aria-owns` name an element by id — pointing at a node
+   *  that is not there is a dangling reference, not a relationship. So the two
+   *  attributes and the listbox itself are gated on the same condition, and the
+   *  closed combobox simply omits them rather than keeping a hidden node alive to
+   *  satisfy the id. */
+  const listShown = open && results.length > 0;
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown') {
@@ -81,11 +126,11 @@ export default function SearchBox({
         type="text"
         role="combobox"
         aria-label="Search lunar feature names"
-        aria-expanded={open && results.length > 0}
-        aria-controls={listId}
+        aria-expanded={listShown}
+        aria-controls={listShown ? listId : undefined}
         aria-activedescendant={active >= 0 ? optionId(active) : undefined}
         aria-autocomplete="list"
-        aria-owns={listId}
+        aria-owns={listShown ? listId : undefined}
         autoComplete="off"
         spellCheck={false}
         placeholder={
@@ -94,7 +139,7 @@ export default function SearchBox({
         disabled={!features}
         value={query}
         onChange={(e) => {
-          setQuery(e.target.value);
+          writeQuery(e.target.value);
           setOpen(true);
           setActive(-1);
         }}
@@ -102,7 +147,7 @@ export default function SearchBox({
         onBlur={() => setOpen(false)}
         onKeyDown={onKeyDown}
       />
-      {open && results.length > 0 && (
+      {listShown && (
         <div id={listId} role="listbox" aria-label="Search results">
           {results.map((f, i) => (
             <button
@@ -124,6 +169,12 @@ export default function SearchBox({
             </button>
           ))}
         </div>
+      )}
+      {listShown && hiddenByFilters > 0 && (
+        <p className="res-filtered" role="status">
+          {hiddenByFilters} of {hiddenByFilters === 1 ? 'it is' : 'these are'} hidden
+          by the active filters, so the map is not drawing {hiddenByFilters === 1 ? 'it' : 'them'}.
+        </p>
       )}
       {features && open && query.trim() !== '' && results.length === 0 && (
         <div className="res-empty" role="status">

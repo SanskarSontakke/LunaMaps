@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import * as Cesium from 'cesium';
 import { fuzzySearch, score } from '@/lib/search';
+import { parseFeatureCollection } from '@/lib/features';
 import {
   MAX_H,
   MIN_H,
@@ -169,5 +170,63 @@ describe('flyToFeature', () => {
     expect(calls[0].orientation?.pitch).toBeCloseTo(-Math.PI / 2);
     expect(calls[0].orientation?.heading).toBe(0);
     expect(calls[0].duration).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The gazetteer the search actually runs on is the one `parseFeatureCollection`
+ * returns (src/lib/features.ts), not the file as fetched. Two things could go
+ * wrong in that hand-over and neither is visible from either side alone: the
+ * validator dropping or renaming a field the matcher scores, and the validator
+ * rewriting the record's `url` into something the card then links to. So the pair
+ * is compared here, on the shipped file.
+ */
+describe('search over the validated gazetteer', () => {
+  const checked = parseFeatureCollection(fc);
+
+  it('is not null: the shipped file passes its own validator', () => {
+    expect(checked).not.toBeNull();
+    expect(checked?.features).toHaveLength(fc.features.length);
+  });
+
+  it('answers the same names in the same order, field for field', () => {
+    if (!checked) throw new Error('the shipped gazetteer must validate');
+    for (const query of ['tycho', 'apollo 11', 'mare', 'rille', 'shackleton']) {
+      expect(checked.features.length).toBe(fc.features.length);
+      expect(
+        fuzzySearch(query, checked).map((f) => [
+          f.properties.name,
+          f.properties.tier,
+          f.properties.diameterKm,
+          f.geometry.coordinates,
+        ]),
+      ).toEqual(
+        fuzzySearch(query, fc).map((f) => [
+          f.properties.name,
+          f.properties.tier,
+          f.properties.diameterKm,
+          f.geometry.coordinates,
+        ]),
+      );
+    }
+  });
+
+  it('every hit the card can link to is an https link', () => {
+    if (!checked) throw new Error('the shipped gazetteer must validate');
+    const hits = fuzzySearch('a', checked, 1_585);
+    expect(hits.length).toBeGreaterThan(100);
+    for (const f of hits) expect(f.properties.url.startsWith('https://')).toBe(true);
+  });
+
+  it('refuses a gazetteer whose tier field drifted, rather than mis-ranking it', () => {
+    // `fuzzySearch` sorts on `(3 - tier)`, so a `tier: "1"` would sort as NaN and
+    // quietly reorder every result list.
+    const broken = {
+      ...fc,
+      features: fc.features.map((f, i) =>
+        i === 0 ? { ...f, properties: { ...f.properties, tier: '1' } } : f,
+      ),
+    };
+    expect(parseFeatureCollection(broken)).toBeNull();
   });
 });
