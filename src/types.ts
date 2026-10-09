@@ -39,6 +39,29 @@ export interface SourceRecord {
 }
 
 /**
+ * One merged block of tiles that exists on disk: `[x0, x1, y0, y1]`, INCLUSIVE,
+ * x growing east and y growing south (row 0 is north) — the reading
+ * `scripts/grid.py` gives and the shape `manifest.validate_availability` accepts.
+ * Ranges rather than tile lists so the block stays small enough to travel with
+ * the manifest.
+ */
+export type TileRange = [number, number, number, number];
+
+/**
+ * `{"<level>": [range, ...]}` — where a region-limited layer's tiles actually
+ * are. Keys are canonical level numbers (`"9"`, never `"09"`); a level with no
+ * key has no tiles at all. An empty object is a legal answer and means
+ * "unavailable"; it is never read as "the whole globe".
+ */
+export type Availability = Record<string, TileRange[]>;
+
+/** What the app keeps of `layers.ortho`: the two fields the renderer reads. */
+export interface OrthoLayerRecord {
+  top: number;
+  availability: Availability;
+}
+
+/**
  * The frontend's contract with the baked `manifest.json`. Every field modelled
  * here is verified by `parseManifest` (src/lib/assets.ts) before the value
  * reaches a component, so no consumer can read an asserted-but-unchecked field.
@@ -71,12 +94,22 @@ export interface Manifest {
   };
   sources: SourceRecord[];
   /**
-   * Exactly the two layers this build renders, each with only `top` — the one
-   * field the renderer reads (as Cesium's maximumLevel). Not a `Record<string,
-   * …>`: an indexable type would claim that *any* layer name resolves to a
-   * validated `{ top }`, which is a promise the validator does not make.
+   * `paper` and `photo` are the two BASE layers this build renders, each with
+   * only `top` — the one field the renderer reads (as Cesium's maximumLevel).
+   * `ortho` is not a base layer: it is an availability-gated overlay, so it
+   * carries `availability` as well, and it is OPTIONAL — the delivered manifest
+   * has no ortho record until the streaming bake writes one, and its absence
+   * means the overlay is unavailable, never that the manifest is broken.
+   *
+   * Not a `Record<string, …>`: an indexable type would claim that *any* layer
+   * name resolves to a validated record, which is a promise the validator does
+   * not make.
    */
-  layers: { paper: { top: number }; photo: { top: number } };
+  layers: {
+    paper: { top: number };
+    photo: { top: number };
+    ortho?: OrthoLayerRecord;
+  };
 }
 
 export const DEFAULT_MODE: Mode = 'globe';

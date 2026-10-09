@@ -3,13 +3,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
 import { createMoonViewer, globeFitHeightMeters, MOON_ELLIPSOID } from '@/lib/cesium/moon';
 import {
+  disableOrthoOverlay,
+  enableOrthoOverlay,
   flyToFeature,
   getCameraState,
+  orthoOverlayEnabled,
   setLayer,
   setMode,
   type CameraState,
   type ModeChange,
 } from '@/lib/cesium/morph';
+import { orthoLevels } from '@/lib/cesium/ortho';
+
 import { attemptMode, createModeLatch, type ModeAttempt } from '@/lib/cesium/modeLatch';
 import { attachPicking } from '@/lib/cesium/picking';
 import { measureMPerPx } from '@/lib/cesium/scaleProbe';
@@ -39,6 +44,7 @@ import {
 import {
   DEFAULT_LAYER,
   DEFAULT_MODE,
+  type Availability,
   type Feature,
   type FeatureCollection,
   type LayerName,
@@ -47,6 +53,7 @@ import {
 } from '@/types';
 import ModeToggle from './ModeToggle';
 import LayerChips from './LayerChips';
+import OrthoControl from './OrthoControl';
 import SearchBox, { SEARCH_INPUT_ID } from './SearchBox';
 import FeatureCard from './FeatureCard';
 import ScaleReadout, { type ReadoutState } from './ScaleReadout';
@@ -89,7 +96,18 @@ export interface MoonHarness {
     pitchRad?: number,
     headingRad?: number,
   ): void;
+  /**
+   * How many imagery layers are attached. THE STACK (Task 3): the viewer holds
+   * exactly one base layer plus the `ortho` overlay when it is enabled, so this
+   * is 1 or 2 — the flat `imageryLayers.length === 1` this harness used to
+   * promise was the pre-overlay invariant.
+   * `orthoEnabled()` is what distinguishes the two; a sweep that asserts a flat
+   * 1 while the overlay is on is testing a stack the app no longer builds.
+   */
   imageryCount(): number;
+  /** Whether the deep-zoom overlay is attached right now — read off the live
+   *  viewer's layer stack, never from the React state that asked for it. */
+  orthoEnabled(): boolean;
   labelCount(): number;
   shownEntities(): number;
   refreshLabels(heightM?: number): void;
@@ -149,6 +167,27 @@ const homeHeight = (viewer: Cesium.Viewer) => {
 // Task 2 gate fixture, pinned to top 1 here and nowhere else.
 const topOf = (manifest: Manifest, layer: LayerName) =>
   layer === 'probe' ? 1 : layerTop(manifest, layer);
+
+/**
+ * The overlay's availability, or `undefined` when there is nothing to overlay.
+ *
+ * One rule in one place, because two consumers must never disagree: a manifest
+ * with no `layers.ortho` record and a record whose `availability` block has
+ * nothing inside this layer's envelope are the SAME answer — the overlay is
+ * unavailable. The envelope test is `orthoLevels`, the same function the
+ * provider's span and the control's label read, so none of the three can call a
+ * block covered while another calls it empty. Neither is ever read as "assume the
+ * whole globe", which for a region-limited pyramid means a 404 on every frame the
+ * camera moves.
+ */
+const orthoAvailabilityOf = (
+  manifest: Manifest | null,
+): Availability | undefined => {
+  const ortho = manifest?.layers.ortho;
+  if (!ortho) return undefined;
+  if (orthoLevels(ortho.availability, ortho.top).length === 0) return undefined;
+  return ortho.availability;
+};
 
 /**
  * Shown when the morph had to be jump-cut at the deadline. The mode DID change,
@@ -211,6 +250,13 @@ export default function MoonMap() {
   const [selected, setSelectedFeature] = useState<Feature | null>(null);
   const [mode, setModeState] = useState<Mode>(DEFAULT_MODE);
   const [layer, setLayerState] = useState<LayerName>(DEFAULT_LAYER);
+  // The deep-zoom overlay, off by default and opt-in from there. Two reasons,
+  // both stated rather than assumed: `ortho` is a *shaded* source, so switching
+  // it on for everybody would put an illumination seam at every box edge without
+  // asking; and the outlines that explain those edges (amendment 2's D11 region
+  // overlay) are a separate change that has not happened yet. Off keeps today's
+  // rendering exactly today's rendering.
+  const [orthoEnabled, setOrthoEnabled] = useState(false);
   // What the live viewer was built with and has since been *confirmed* at for
   // the layer (`setLayer` is synchronous, so the layer effect dedupes on it
   // directly). The mode half of that idea now lives in `modeLatch`.
@@ -613,6 +659,10 @@ export default function MoonMap() {
           viewer.scene.requestRender();
         },
         imageryCount: () => viewer.imageryLayers.length,
+        // The overlay's real state, read from the viewer's layer stack rather
+        // than from the `orthoEnabled` React state that asked for it: a sweep
+        // needs to be able to tell "we asked" from "it is attached".
+        orthoEnabled: () => orthoOverlayEnabled(viewer),
         labelCount: () => labelsRef.current?.count ?? 0,
         shownEntities: () =>
           viewer.isDestroyed()
@@ -693,6 +743,33 @@ export default function MoonMap() {
     appliedLayer.current = layer;
     setLayer(viewer, layer, topOf(manifest, layer));
   }, [layer, manifest]);
+
+  // The deep-zoom overlay, stacked above whatever base the effect above just
+  // applied. Declared after it on purpose: effects run in declaration order, so
+  // on the commit where the manifest first arrives the viewer exists by the time
+  // this runs, and a base-layer swap never has to know about the overlay
+  // (`setLayer` keeps it). `bootNonce` is here because a retry builds a NEW
+  // viewer, and an overlay attached to the old one is not an overlay on this one.
+  //
+  // There is no availability fallback in here: `orthoAvailabilityOf` returns
+  // undefined for both "no record" and "empty record", and the overlay then
+  // stays off and says so.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+    const availability = orthoAvailabilityOf(manifest);
+    if (orthoEnabled && availability) {
+      enableOrthoOverlay(viewer, {
+        availability,
+        top: manifest?.layers.ortho?.top,
+      });
+    } else {
+      disableOrthoOverlay(viewer);
+    }
+    // Every value this effect reads is a dependency already: `viewerRef` is a
+    // ref, `orthoAvailabilityOf`/`enableOrthoOverlay`/`disableOrthoOverlay` are
+    // module scope, so this array is complete and fixed-length like the others.
+  }, [orthoEnabled, manifest, bootNonce]);
 
   // Keep the sync's mirrors in step with the truth the effects just confirmed.
   useEffect(() => {
@@ -924,6 +1001,19 @@ export default function MoonMap() {
               while the map is still on paper. */}
           <ModeToggle mode={sceneMode} onChange={requestModeChange} />
           <LayerChips layer={layer} onChange={setLayerState} />
+          {/* The overlay control is outside the chips on purpose: `ortho` does not
+              compete with `paper`/`photo`, it stacks over them — and when the
+              manifest records no availability it stays visible and says it is
+              unavailable, which is the honest version of a disabled button. `top`
+              travels with the availability because the copy's level span is the
+              envelope-filtered one: a label that never saw the record's ceiling
+              could promise a depth the provider refuses to serve. */}
+          <OrthoControl
+            availability={orthoAvailabilityOf(manifest)}
+            top={manifest.layers.ortho?.top}
+            enabled={orthoEnabled}
+            onToggle={setOrthoEnabled}
+          />
           <SearchBox features={features} onChoose={goToFeature} />
           <ScaleReadout readout={readout} top={topOf(manifest, layer)} />
           {!features && (

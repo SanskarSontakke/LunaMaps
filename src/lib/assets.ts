@@ -1,7 +1,19 @@
 'use client';
 import { useEffect, useState } from 'react';
-import type { Manifest, SourceRecord } from '@/types';
-import { MAX_TOP_LEVEL, MOON_RADIUS_M, TILE_SIZE } from '@/lib/grid';
+import type {
+  Availability,
+  Manifest,
+  OrthoLayerRecord,
+  SourceRecord,
+  TileRange,
+} from '@/types';
+import {
+  MAX_TOP_LEVEL,
+  MOON_RADIUS_M,
+  TILE_SIZE,
+  levelCols,
+  levelRows,
+} from '@/lib/grid';
 
 const EXPECTED_SCHEMA = 1;
 // The baked pyramids span levels 0..MAX_TOP_LEVEL. A layer's `top` becomes
@@ -22,6 +34,52 @@ const isRecord = (v: unknown): v is Rec =>
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 /** Non-blank string: `generatedAt` and the source filenames are printed as-is. */
 const isText = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
+/** A tile index: an actual integer, not a boolean or a numeric string. */
+const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v);
+/** `[x0, x1, y0, y1]`, inclusive — see `TileRange` in src/types.ts. */
+const isTileRange = (v: unknown): v is TileRange =>
+  Array.isArray(v) && v.length === 4 && v.every(isInt);
+
+/**
+ * Validate one `layers.<name>.availability` block, mirroring
+ * `manifest.validate_availability` in `scripts/manifest.py` refusal for refusal:
+ * canonical integer level keys, no level above the layer's own `top` or the grid
+ * cap, a non-empty list of ranges per level, four integers per range, no
+ * inverted bounds, and every range inside that level's `2^(L+1) x 2^L` grid.
+ *
+ * Why the duplication is deliberate: this is the app's only gate, and a range
+ * that names a tile outside the grid is a 404 on every frame — the exact failure
+ * availability exists to prevent. `scripts/tests/test_disk_guard.py` keeps the
+ * Python side honest by re-validating the shipped manifest against a
+ * transcription of this function and comparing against `validate_availability`.
+ *
+ * Returns `null` for "refuse the whole manifest". An absent block is `{}` —
+ * a layer with no recorded availability, which the UI reports as unavailable
+ * (never as "assume the whole globe").
+ */
+function parseAvailability(value: unknown, top: number): Availability | null {
+  if (value === undefined) return {};
+  if (!isRecord(value)) return null;
+  const out: Availability = {};
+  for (const [key, ranges] of Object.entries(value)) {
+    const level = Number(key);
+    if (!Number.isInteger(level) || String(level) !== key) return null;
+    if (level < 0 || level > Math.min(top, MAX_TOP_LEVEL)) return null;
+    if (!Array.isArray(ranges) || ranges.length === 0) return null;
+    const cols = levelCols(level);
+    const rows = levelRows(level);
+    const checked: TileRange[] = [];
+    for (const r of ranges) {
+      if (!isTileRange(r)) return null;
+      const [x0, x1, y0, y1] = r;
+      if (x0 > x1 || y0 > y1) return null;
+      if (x0 < 0 || x1 > cols - 1 || y0 < 0 || y1 > rows - 1) return null;
+      checked.push([x0, x1, y0, y1]);
+    }
+    out[key] = checked;
+  }
+  return out;
+}
 
 /**
  * Validate every field the app reads, and return only those fields.
@@ -77,6 +135,17 @@ export function parseManifest(value: unknown): Manifest | null {
   if (!isRecord(paper) || !isBakedTop(paper.top)) return null;
   if (!isRecord(photo) || !isBakedTop(photo.top)) return null;
 
+  // Optional by design: the delivered manifest carries no ortho record until the
+  // streaming bake writes one, and `paper`/`photo` must keep booting either way.
+  // An absent record is no record; a present but malformed one refuses the file.
+  let ortho: OrthoLayerRecord | undefined;
+  if (layers.ortho !== undefined) {
+    if (!isRecord(layers.ortho) || !isBakedTop(layers.ortho.top)) return null;
+    const availability = parseAvailability(layers.ortho.availability, layers.ortho.top);
+    if (availability === null) return null;
+    ortho = { top: layers.ortho.top, availability };
+  }
+
   return {
     schema: EXPECTED_SCHEMA,
     generatedAt: value.generatedAt,
@@ -92,8 +161,14 @@ export function parseManifest(value: unknown): Manifest | null {
       prjWkt,
     },
     sources: checked,
-    // Only `top` survives: it is the field moon.ts feeds to Cesium.
-    layers: { paper: { top: paper.top }, photo: { top: photo.top } },
+    // Only `top` survives on the base layers: it is the field moon.ts feeds to
+    // Cesium. `ortho` also keeps `availability`, because that is the field that
+    // decides which tiles the overlay may request.
+    layers: {
+      paper: { top: paper.top },
+      photo: { top: photo.top },
+      ...(ortho ? { ortho } : {}),
+    },
   };
 }
 

@@ -79,6 +79,31 @@ main {
 }
 .ctl-mode { top: 14px; left: 14px; }
 .ctl-layer { top: 14px; left: 148px; }
+/* Deep-zoom overlay (Task 3): under the layer chips it stacks on, never beside
+   them — it is an overlay, not a third base layer. The gloss is the label that
+   has to keep saying "shaded relief, not albedo", so it stays on screen. */
+.ctl-ortho {
+  top: 58px;
+  left: 148px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 4px 6px;
+  max-width: 250px;
+}
+.ctl-ortho button {
+  padding: 4px 9px;
+  font-size: 12px;
+}
+.ctl-ortho button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.ortho-gloss {
+  font-size: 10px;
+  line-height: 1.25;
+  opacity: 0.8;
+}
 .ctl button {
   all: unset;
   cursor: pointer;

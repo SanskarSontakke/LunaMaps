@@ -1,5 +1,5 @@
 import * as Cesium from 'cesium';
-import type { LayerName, Mode } from '@/types';
+import type { Availability, LayerName, Mode } from '@/types';
 import {
   MAX_H,
   MIN_H,
@@ -8,6 +8,7 @@ import {
   clampHeight,
   makeProvider,
 } from './moon';
+import { createOrthoProvider, orthoLevels } from './ortho';
 
 // The height limits and the height clamp are defined once in moon.ts (where the
 // screen-space controller is configured) and re-exported here so callers and
@@ -404,18 +405,125 @@ function waitForSceneMode(viewer: Cesium.Viewer, target: number): Promise<MorphW
   });
 }
 
+/**
+ * THE IMAGERY STACK, restated for Task 3.
+ *
+ * It used to be "exactly one imagery layer, always" — `setLayer` removed every
+ * layer and added one, and `MoonMap`'s harness exposed that as
+ * `imageryCount() === 1`. That invariant is deliberately broken: `ortho` is an
+ * **overlay stacked above whichever base layer is active**, not a third
+ * mutually-exclusive chip. A chip would render a black globe everywhere except
+ * the thirteen baked boxes, which is the opposite of "the base shows through".
+ *
+ * The truth now is: **exactly one base layer at index 0, plus the ortho overlay
+ * above it when it is enabled** — so `imageryLayers.length` is 1 (overlay off)
+ * or 2 (overlay on), and never anything else. Every function below keeps that
+ * shape, and `src/test/ortho.test.ts` measures it.
+ */
+export const BASE_LAYER_INDEX = 0;
+
+interface OrthoOverlay {
+  layer: Cesium.ImageryLayer;
+  availability: Availability;
+}
+
+/** One overlay per viewer, keyed on the viewer itself so a boot retry that built
+ *  a new viewer cannot inherit (or double-stack onto) the previous one. */
+const orthoOverlays = new WeakMap<Cesium.Viewer, OrthoOverlay>();
+
+/** Is the overlay the honest answer right now — attached, and still in the stack? */
+export function orthoOverlayEnabled(viewer: Cesium.Viewer): boolean {
+  if (viewer.isDestroyed()) return false;
+  const record = orthoOverlays.get(viewer);
+  return !!record && viewer.imageryLayers.contains(record.layer);
+}
+
+/**
+ * Stack the `ortho` overlay above the base layer, or leave it alone if it is
+ * already there with this same availability.
+ *
+ * Returns `true` when the overlay is enabled after the call, `false` when it
+ * could not be: no live viewer, or nothing to show. The second case is the whole
+ * point of the layer — a manifest that records no ortho tiles inside this layer's
+ * envelope means nothing was baked that could be requested, and attaching a
+ * provider that covers the globe would ask Cesium for files that do not exist.
+ * There is no fallback coverage here and there is deliberately no default:
+ * `availability` is the only source, and "empty" is `orthoLevels` answering `[]`
+ * — the same list the provider's span and the control's label are built from, so
+ * a gate cannot accept what the label then calls unavailable (an L7-only block is
+ * not empty and is still nothing this layer can serve).
+ *
+ * Idempotent by construction: a repeat call with the same block does nothing, so
+ * an effect that re-runs cannot leak a second layer; a call with a *new* block
+ * (the manifest changed) replaces the overlay instead of stacking another.
+ */
+export function enableOrthoOverlay(
+  viewer: Cesium.Viewer,
+  options: { availability?: Availability; top?: number },
+): boolean {
+  if (viewer.isDestroyed()) return false;
+  const availability = options.availability;
+  if (!availability || orthoLevels(availability, options.top).length === 0) {
+    // Refusing to attach is not a failure the caller has to retry: the overlay
+    // simply has nothing to show. Drop any stale one so the stack cannot hold an
+    // overlay the manifest no longer describes.
+    disableOrthoOverlay(viewer);
+    return false;
+  }
+  const existing = orthoOverlays.get(viewer);
+  if (existing && viewer.imageryLayers.contains(existing.layer)) {
+    if (existing.availability === availability) return true;
+    // Different availability: the stale provider would answer from the old
+    // boxes, so it is removed *and destroyed* before the new one is attached.
+    if (!removeOverlayLayer(viewer, existing.layer)) return false;
+  }
+  const layer = viewer.imageryLayers.addImageryProvider(
+    createOrthoProvider({ availability, top: options.top }),
+  );
+  orthoOverlays.set(viewer, { layer, availability });
+  viewer.scene.requestRender();
+  return true;
+}
+
+/**
+ * Take the overlay off and destroy it, so its tiles are released rather than
+ * left attached to a provider nobody holds. Returns `true` if there was one.
+ * A viewer that was already destroyed, and an overlay that was never attached,
+ * both answer `false` without touching anything.
+ */
+export function disableOrthoOverlay(viewer: Cesium.Viewer): boolean {
+  if (viewer.isDestroyed()) return false;
+  const record = orthoOverlays.get(viewer);
+  if (!record) return false;
+  orthoOverlays.delete(viewer);
+  return removeOverlayLayer(viewer, record.layer);
+}
+
+/** Remove the overlay only if it is still in the collection: a layer detached
+ *  elsewhere must not be removed twice, and never re-attached behind its back. */
+function removeOverlayLayer(viewer: Cesium.Viewer, layer: Cesium.ImageryLayer): boolean {
+  if (!viewer.imageryLayers.contains(layer)) return false;
+  return viewer.imageryLayers.remove(layer, true);
+}
+
 export function setLayer(viewer: Cesium.Viewer, layer: LayerName, top: number): void {
-  // Remove *every* existing layer, then add exactly one. Removing only index 0
-  // could leave two imagery layers stacked if a previous swap added without
-  // removing; imageryLayers.length must be 1 after any number of swaps.
-  while (viewer.imageryLayers.length > 0) {
-    const existing = viewer.imageryLayers.get(0);
-    if (!existing) break;
+  // Remove every BASE layer, then add exactly one — and never the overlay.
+  // Removing the overlay too would silently drop the deep zoom the user asked
+  // for; removing only index 0 could leave two bases stacked. The overlay stays
+  // above the new base because the base is inserted at `BASE_LAYER_INDEX`.
+  const overlay = orthoOverlays.get(viewer)?.layer;
+  for (let i = viewer.imageryLayers.length - 1; i >= 0; i -= 1) {
+    const existing = viewer.imageryLayers.get(i);
+    if (!existing || existing === overlay) continue;
     viewer.imageryLayers.remove(existing, true);
   }
-  viewer.imageryLayers.addImageryProvider(makeProvider(layer, top));
+  viewer.imageryLayers.addImageryProvider(
+    makeProvider(layer, top),
+    BASE_LAYER_INDEX,
+  );
   viewer.scene.requestRender();
 }
+
 
 /**
  * Camera height (m) for a fly-to: four feature diameters, never closer than

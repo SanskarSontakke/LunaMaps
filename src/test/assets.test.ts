@@ -208,10 +208,110 @@ describe('parseManifest', () => {
   it('accepts the REAL baked manifest on disk (validation is not over-strict)', () => {
     const m = parseManifest(JSON.parse(readFileSync('public/tiles/manifest.json', 'utf8')));
     expect(m).not.toBeNull();
-    expect(layerTop(m!, 'paper')).toBe(6);
-    expect(layerTop(m!, 'photo')).toBe(6);
+    // 7, not 6: `bake.py --top 7` published the L7 pyramid on 2026-10-09 and the
+    // manifest now advertises it. The point of this test is that the real artifact
+    // parses, so the numbers in it have to be the real ones.
+    expect(layerTop(m!, 'paper')).toBe(7);
+    expect(layerTop(m!, 'photo')).toBe(7);
     expect(m!.generatedAt).toMatch(/^\d{4}-\d{2}-\d{2}/);
     expect(m!.sources.map((s) => s.role)).toEqual(['detail', 'color', 'labels']);
+  });
+});
+
+describe('layers.ortho.availability', () => {
+  // The field is optional by construction: the delivered manifest carries no
+  // ortho record at all until the streaming bake writes one, and a missing record
+  // must never brick `paper`/`photo`. A MALFORMED one is a different matter — it
+  // is refused, because a wrong range is a 404 on every frame.
+  const withOrtho = (ortho: unknown) =>
+    parseManifest({
+      ...GOOD,
+      layers: { ...GOOD.layers, ortho },
+    });
+
+  it('accepts a well-formed record and carries it through', () => {
+    const m = withOrtho({ top: 10, availability: { '9': [[10, 12, 5, 5]] } })!;
+    expect(m.layers.ortho).toEqual({
+      top: 10,
+      availability: { '9': [[10, 12, 5, 5]] },
+    });
+    expect(Object.keys(m.layers).sort()).toEqual(['ortho', 'paper', 'photo']);
+  });
+
+  it('leaves the field absent when the manifest has no ortho record', () => {
+    const m = parseManifest(GOOD)!;
+    expect('ortho' in m.layers).toBe(false);
+    expect(m.layers.ortho).toBeUndefined();
+  });
+
+  it('treats a missing or empty availability block as empty, not as the whole globe', () => {
+    // Requirement 5: the overlay becomes unavailable; the manifest stays valid,
+    // because the app must still render `paper`/`photo`.
+    expect(withOrtho({ top: 10 })!.layers.ortho).toEqual({
+      top: 10,
+      availability: {},
+    });
+    expect(withOrtho({ top: 10, availability: {} })!.layers.ortho).toEqual({
+      top: 10,
+      availability: {},
+    });
+  });
+
+  it('rejects an availability range outside the level grid', () => {
+    // L9 is 1024 x 512 tiles, so column 1024 does not exist.
+    expect(withOrtho({ top: 10, availability: { '9': [[0, 1024, 0, 0]] } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: { '9': [[0, 1023, 0, 512]] } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: { '9': [[-1, 10, 0, 0]] } })).toBeNull();
+  });
+
+  it('rejects inverted bounds, non-integer bounds and the wrong arity', () => {
+    expect(withOrtho({ top: 10, availability: { '9': [[12, 10, 5, 5]] } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: { '9': [[10, 12, 5, 4]] } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: { '9': [[1, 2, 3, 4, 5]] } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: { '9': [[1, 2.5, 3, 4]] } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: { '9': ['1023'] } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: { '9': '1023' } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: [] })).toBeNull();
+  });
+
+  it('rejects an empty range list, which is what `validate_availability` rejects too', () => {
+    expect(withOrtho({ top: 10, availability: { '9': [] } })).toBeNull();
+  });
+
+  it('rejects a level above the record’s own top, and a non-canonical level key', () => {
+    expect(withOrtho({ top: 7, availability: { '8': [[0, 1, 0, 0]] } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: { '11': [[0, 1, 0, 0]] } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: { '09': [[0, 1, 0, 0]] } })).toBeNull();
+    expect(withOrtho({ top: 10, availability: { 'nine': [[0, 1, 0, 0]] } })).toBeNull();
+  });
+
+  it('rejects an ortho record whose top the grid does not define', () => {
+    expect(withOrtho({ top: 11, availability: {} })).toBeNull();
+    expect(withOrtho({ top: 'ten', availability: {} })).toBeNull();
+    expect(withOrtho('ortho')).toBeNull();
+    expect(withOrtho(null)).toBeNull();
+  });
+
+  it('keeps only the fields it validated, so no cast can assert a bake key', () => {
+    const m = withOrtho({
+      top: 10,
+      availability: { '9': [[10, 12, 5, 5]] },
+      tiles: 30_172,
+      bytes: 1_200_000,
+    })!;
+    expect(Object.keys(m.layers.ortho!).sort()).toEqual(['availability', 'top']);
+    expect(Object.keys(m.layers.ortho!.availability)).toEqual(['9']);
+  });
+
+  it('accepts the REAL baked manifest on disk either way', () => {
+    // Whatever the tree is mid-bake, the app must still boot: no ortho record is
+    // legal, and so is the one the streaming run will write.
+    const shipped = parseManifest(
+      JSON.parse(readFileSync('public/tiles/manifest.json', 'utf8')),
+    )!;
+    expect(shipped.layers.ortho === undefined || shipped.layers.ortho.top >= 0).toBe(
+      true,
+    );
   });
 });
 
