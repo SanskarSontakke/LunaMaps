@@ -219,6 +219,868 @@
    "diameterKm": 294.15512
   }
  ],
+ "views": [
+  {
+   "id": "south-polar-cap",
+   "name": "South Polar Cap",
+   "kind": "polar-cap",
+   "boxes": [
+    [
+     -180.0,
+     -90.0,
+     180.0,
+     -60.0
+    ]
+   ],
+   "derivedFrom": "declared"
+  },
+  {
+   "id": "north-polar-cap",
+   "name": "North Polar Cap",
+   "kind": "polar-cap",
+   "boxes": [
+    [
+     -180.0,
+     60.0,
+     180.0,
+     90.0
+    ]
+   ],
+   "derivedFrom": "declared"
+  },
+  {
+   "id": "near-side",
+   "name": "Near Side",
+   "kind": "hemisphere",
+   "boxes": [
+    [
+     -90.0,
+     -90.0,
+     90.0,
+     90.0
+    ]
+   ],
+   "derivedFrom": "declared"
+  },
+  {
+   "id": "far-side",
+   "name": "Far Side",
+   "kind": "hemisphere",
+   "boxes": [
+    [
+     -180.0,
+     -90.0,
+     -90.0,
+     90.0
+    ],
+    [
+     90.0,
+     -90.0,
+     180.0,
+     90.0
+    ]
+   ],
+   "derivedFrom": "declared"
+  },
+  {
+   "id": "lacus-aestatis",
+   "name": "Lacus Aestatis",
+   "kind": "lacus",
+   "boxes": [
+    [
+     -69.3879,
+     -16.244600000000002,
+     -67.86079999999998,
+     -13.4231
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-autumni",
+   "name": "Lacus Autumni",
+   "kind": "lacus",
+   "boxes": [
+    [
+     -85.35429999999997,
+     -14.567200000000001,
+     -80.572,
+     -9.181700000000001
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-bonitatis",
+   "name": "Lacus Bonitatis",
+   "kind": "lacus",
+   "boxes": [
+    [
+     42.6863,
+     21.231,
+     46.200300000000006,
+     24.9725
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-doloris",
+   "name": "Lacus Doloris",
+   "kind": "lacus",
+   "boxes": [
+    [
+     7.001,
+     15.429400000000001,
+     10.5593,
+     18.396800000000002
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-excellentiae",
+   "name": "Lacus Excellentiae",
+   "kind": "lacus",
+   "boxes": [
+    [
+     -46.13489999999996,
+     -38.7581,
+     -40.381399999999985,
+     -32.4609
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-felicitatis",
+   "name": "Lacus Felicitatis",
+   "kind": "lacus",
+   "boxes": [
+    [
+     3.6691,
+     17.656100000000002,
+     7.048500000000001,
+     19.5603
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-gaudii",
+   "name": "Lacus Gaudii",
+   "kind": "lacus",
+   "boxes": [
+    [
+     10.753,
+     15.2527,
+     13.7377,
+     17.0208
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-hiemalis",
+   "name": "Lacus Hiemalis",
+   "kind": "lacus",
+   "boxes": [
+    [
+     13.089300000000001,
+     14.3473,
+     14.7278,
+     15.9253
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-lenitatis",
+   "name": "Lacus Lenitatis",
+   "kind": "lacus",
+   "boxes": [
+    [
+     10.8552,
+     12.921100000000001,
+     13.2545,
+     15.3276
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-luxuriae",
+   "name": "Lacus Luxuriae",
+   "kind": "lacus",
+   "boxes": [
+    [
+     174.7528,
+     17.8913,
+     176.4572,
+     20.092000000000002
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-mortis",
+   "name": "Lacus Mortis",
+   "kind": "lacus",
+   "boxes": [
+    [
+     23.6129,
+     42.5034,
+     31.0252,
+     47.746700000000004
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-oblivionis",
+   "name": "Lacus Oblivionis",
+   "kind": "lacus",
+   "boxes": [
+    [
+     -169.20739999999998,
+     -21.043300000000002,
+     -167.9633,
+     -19.9162
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-odii",
+   "name": "Lacus Odii",
+   "kind": "lacus",
+   "boxes": [
+    [
+     6.1833,
+     18.7723,
+     8.43,
+     19.962400000000002
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-perseverantiae",
+   "name": "Lacus Perseverantiae",
+   "kind": "lacus",
+   "boxes": [
+    [
+     60.7228,
+     7.317600000000001,
+     62.847,
+     8.7062
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-solitudinis",
+   "name": "Lacus Solitudinis",
+   "kind": "lacus",
+   "boxes": [
+    [
+     102.1164,
+     -28.5809,
+     104.6532,
+     -25.4721
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-somniorum",
+   "name": "Lacus Somniorum",
+   "kind": "lacus",
+   "boxes": [
+    [
+     22.0363,
+     33.219,
+     39.151700000000005,
+     41.4964
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-spei",
+   "name": "Lacus Spei",
+   "kind": "lacus",
+   "boxes": [
+    [
+     63.6869,
+     42.5066,
+     66.9363,
+     44.555
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-temporis",
+   "name": "Lacus Temporis",
+   "kind": "lacus",
+   "boxes": [
+    [
+     52.1313,
+     43.807700000000004,
+     60.560100000000006,
+     49.3566
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-tenebrarum",
+   "name": "Lacus Tenebrarum",
+   "kind": "lacus",
+   "boxes": [
+    [
+     -88.16999999999996,
+     -87.21000000000001,
+     -87.16999999999996,
+     -86.21000000000001
+    ]
+   ],
+   "derivedFrom": "centre+size"
+  },
+  {
+   "id": "lacus-timoris",
+   "name": "Lacus Timoris",
+   "kind": "lacus",
+   "boxes": [
+    [
+     -31.069999999999993,
+     -41.1935,
+     -25.248299999999972,
+     -38.2918
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "lacus-veris",
+   "name": "Lacus Veris",
+   "kind": "lacus",
+   "boxes": [
+    [
+     -88.20299999999997,
+     -22.277,
+     -83.19869999999997,
+     -10.6918
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-anguis",
+   "name": "Mare Anguis",
+   "kind": "mare",
+   "boxes": [
+    [
+     65.699,
+     20.146,
+     69.95,
+     24.7361
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-australe",
+   "name": "Mare Australe",
+   "kind": "mare",
+   "boxes": [
+    [
+     70.43310000000001,
+     -64.1953,
+     113.36330000000001,
+     -31.8379
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-cognitum",
+   "name": "Mare Cognitum",
+   "kind": "mare",
+   "boxes": [
+    [
+     -28.09960000000001,
+     -13.923200000000001,
+     -16.4461,
+     -5.8966
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-crisium",
+   "name": "Mare Crisium",
+   "kind": "mare",
+   "boxes": [
+    [
+     49.509800000000006,
+     9.6892,
+     68.52810000000001,
+     24.5344
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-fecunditatis",
+   "name": "Mare Fecunditatis",
+   "kind": "mare",
+   "boxes": [
+    [
+     40.770700000000005,
+     -21.6952,
+     63.3395,
+     6.1117
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-frigoris",
+   "name": "Mare Frigoris",
+   "kind": "mare",
+   "boxes": [
+    [
+     -43.13529999999997,
+     49.080600000000004,
+     38.033000000000015,
+     64.3818
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-humboldtianum",
+   "name": "Mare Humboldtianum",
+   "kind": "mare",
+   "boxes": [
+    [
+     74.7452,
+     53.6529,
+     88.4895,
+     60.017100000000006
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-humorum",
+   "name": "Mare Humorum",
+   "kind": "mare",
+   "boxes": [
+    [
+     -45.82579999999996,
+     -31.0594,
+     -30.610500000000002,
+     -18.4374
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-imbrium",
+   "name": "Mare Imbrium",
+   "kind": "mare",
+   "boxes": [
+    [
+     -38.3621,
+     15.232800000000001,
+     8.555499999999995,
+     51.4619
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-ingenii",
+   "name": "Mare Ingenii",
+   "kind": "mare",
+   "boxes": [
+    [
+     158.5534,
+     -37.4224,
+     169.85160000000002,
+     -28.5364
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-insularum",
+   "name": "Mare Insularum",
+   "kind": "mare",
+   "boxes": [
+    [
+     -39.195299999999975,
+     -0.5961,
+     -22.153500000000008,
+     16.3453
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-marginis",
+   "name": "Mare Marginis",
+   "kind": "mare",
+   "boxes": [
+    [
+     81.1508,
+     9.811300000000001,
+     93.3528,
+     18.5916
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-moscoviense",
+   "name": "Mare Moscoviense",
+   "kind": "mare",
+   "boxes": [
+    [
+     143.4122,
+     22.9542,
+     153.2606,
+     31.497400000000003
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-nectaris",
+   "name": "Mare Nectaris",
+   "kind": "mare",
+   "boxes": [
+    [
+     28.7515,
+     -21.058600000000002,
+     39.6781,
+     -9.905000000000001
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-nubium",
+   "name": "Mare Nubium",
+   "kind": "mare",
+   "boxes": [
+    [
+     -29.267499999999984,
+     -30.481,
+     -5.445599999999956,
+     -11.8521
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-orientale",
+   "name": "Mare Orientale",
+   "kind": "mare",
+   "boxes": [
+    [
+     -99.96289999999999,
+     -24.3901,
+     -89.7414,
+     -15.231
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-serenitatis",
+   "name": "Mare Serenitatis",
+   "kind": "mare",
+   "boxes": [
+    [
+     6.588200000000001,
+     16.133200000000002,
+     29.924300000000002,
+     37.809200000000004
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-smythii",
+   "name": "Mare Smythii",
+   "kind": "mare",
+   "boxes": [
+    [
+     80.9405,
+     -7.455500000000001,
+     92.71860000000001,
+     4.4956
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-spumans",
+   "name": "Mare Spumans",
+   "kind": "mare",
+   "boxes": [
+    [
+     63.613400000000006,
+     -1.0618,
+     66.7329,
+     3.7225
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-tranquillitatis",
+   "name": "Mare Tranquillitatis",
+   "kind": "mare",
+   "boxes": [
+    [
+     16.924,
+     -4.051200000000001,
+     45.490300000000005,
+     19.3748
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-undarum",
+   "name": "Mare Undarum",
+   "kind": "mare",
+   "boxes": [
+    [
+     65.2359,
+     3.6069,
+     72.4865,
+     10.239500000000001
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "mare-vaporum",
+   "name": "Mare Vaporum",
+   "kind": "mare",
+   "boxes": [
+    [
+     -0.41329999999999245,
+     9.3893,
+     8.729300000000023,
+     16.9053
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "oceanus-procellarum",
+   "name": "Oceanus Procellarum",
+   "kind": "oceanus",
+   "boxes": [
+    [
+     -81.08350000000002,
+     -16.265800000000002,
+     -26.84979999999996,
+     57.433
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "planitia-descensus",
+   "name": "Planitia Descensus",
+   "kind": "planitia",
+   "boxes": [
+    [
+     -64.65440000000001,
+     6.6803,
+     -63.65440000000001,
+     7.6803
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-aestuum",
+   "name": "Sinus Aestuum",
+   "kind": "sinus",
+   "boxes": [
+    [
+     -11.957299999999975,
+     7.596100000000001,
+     -4.262200000000007,
+     15.708300000000001
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-amoris",
+   "name": "Sinus Amoris",
+   "kind": "sinus",
+   "boxes": [
+    [
+     35.4236,
+     16.890800000000002,
+     41.511900000000004,
+     22.921400000000002
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-asperitatis",
+   "name": "Sinus Asperitatis",
+   "kind": "sinus",
+   "boxes": [
+    [
+     23.5481,
+     -8.947000000000001,
+     30.7713,
+     -2.2846
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-concordiae",
+   "name": "Sinus Concordiae",
+   "kind": "sinus",
+   "boxes": [
+    [
+     40.4671,
+     9.8988,
+     45.5833,
+     12.489
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-fidei",
+   "name": "Sinus Fidei",
+   "kind": "sinus",
+   "boxes": [
+    [
+     1.277,
+     17.096600000000002,
+     3.005,
+     19.3231
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-honoris",
+   "name": "Sinus Honoris",
+   "kind": "sinus",
+   "boxes": [
+    [
+     15.4868,
+     9.9245,
+     19.264100000000003,
+     13.263100000000001
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-iridum",
+   "name": "Sinus Iridum",
+   "kind": "sinus",
+   "boxes": [
+    [
+     -36.37549999999999,
+     40.531600000000005,
+     -25.81880000000001,
+     48.0051
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-lunicus",
+   "name": "Sinus Lunicus",
+   "kind": "sinus",
+   "boxes": [
+    [
+     -4.176299999999969,
+     30.9873,
+     0.39560000000000173,
+     33.8479
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-medii",
+   "name": "Sinus Medii",
+   "kind": "sinus",
+   "boxes": [
+    [
+     -3.371099999999956,
+     -2.0479,
+     5.550600000000031,
+     4.6411
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-roris",
+   "name": "Sinus Roris",
+   "kind": "sinus",
+   "boxes": [
+    [
+     -56.58889999999997,
+     47.6122,
+     -46.54480000000001,
+     52.4711
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-successus",
+   "name": "Sinus Successus",
+   "kind": "sinus",
+   "boxes": [
+    [
+     56.519400000000005,
+     -0.8608,
+     60.188100000000006,
+     2.8719
+    ]
+   ],
+   "derivedFrom": "bbox"
+  },
+  {
+   "id": "sinus-viscositatis",
+   "name": "Sinus Viscositatis",
+   "kind": "sinus",
+   "boxes": [
+    [
+     -42.37529999999998,
+     34.258900000000004,
+     -39.62389999999999,
+     36.251000000000005
+    ]
+   ],
+   "derivedFrom": "bbox"
+  }
+ ],
  "availability": {
   "8": [
    [

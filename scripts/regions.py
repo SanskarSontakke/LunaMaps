@@ -29,6 +29,39 @@ mare coordinates nobody would dispute. Where a published figure disagrees with i
 tables -- the region follows the data the app itself draws its label from, so
 clicking a name cannot fly to a box that does not contain it. The disagreement is
 recorded in `NOTES`, not resolved in silence.
+
+`views` is a SECOND collection in the same artifact, and the separation is the
+point of it. A region is a box plus the levels worth baking, so it carries a
+tile-count promise -- `cost.tiles`, `cost.tilesPerLevel` and `availability` are all
+computed from it, and `test_disk_guard` asserts plan == delivery against the 7,106
+tiles on disk. A view is `{id, name, kind, boxes, derivedFrom}` and nothing else:
+no `minLevel`, no `maxLevel`, no `source`, which is what keeps it out of that
+arithmetic and what lets the south polar cap -- the user's own example of an area
+to select -- be selectable on 2026-10-09 even though neither measured source could
+bake it honestly (docs/superpowers/specs/2026-10-08-amendment-2-resolution-and-browsing.md
+§7). Selecting an area draws its outline, tints its interior and frames the camera
+(amendment 2 D11); none of that needs a baked tile. `cost`, `availability`,
+`tile_count` and the printed summary must not move by one tile when `views` is
+added, and `test_adding_views_leaves_the_bake_arithmetic_exactly_where_it_was` plus
+`test_the_views_key_does_not_change_the_printed_summary` are the loud version of
+that rule.
+
+A view's `boxes` is a LIST because an area is not always one rectangle: the far side
+is lon [-180,-90] and [90,180], and a footprint that straddles the antimeridian is
+one set of tiles but two drawable halves. So `west > east` never appears in an
+emitted view box -- that form is correct as a set and undrawable as an outline --
+and `src/lib/viewRegions.ts` refuses it rather than drawing the complement.
+
+Where the view path reads a gazetteer bbox it does so with `derive`'s guard, with
+one deliberate difference: `MAX_BBOX_SPAN_DEG` is a COST ceiling, and 26 of the 57
+mare-class areas are wider than 8 deg (Mare Imbrium is 46.9 deg of longitude
+across), so carrying that ceiling into the view path would frame every great mare
+as a 1-degree box at its own centre. A view costs nothing to state, so its ceiling
+is `VIEW_MAX_BBOX_SPAN_DEG` -- half the globe, which no named area spans unless the
+record is broken -- while the geometry trap that ceiling was never about, the pole,
+stays exactly where `derive` puts it: `POLAR_LAT_LIMIT`, plus
+`labels.KNOWN_BBOX_DEFECTS`, whose bboxes ship as `null` in `features.json` and are
+therefore untrusted here too. Both fall back to centre+size and say so.
 """
 from __future__ import annotations
 
@@ -403,12 +436,166 @@ def curated(records):
     return out
 
 
+# --- browsable views (amendment 2 D11) ---------------------------------------
+
+#: The latitude a polar cap starts at. 60 deg is the usual definition of a polar
+#: cap and, at this grid, the row band whose tiles the global L0-L7 layers still
+#: cover honestly -- a cap is a *view*, so nothing here is paying for it either way.
+POLAR_CAP_LAT_DEG = 60.0
+
+#: A view box is drawn and framed, so a record whose footprint is a point (IAU
+#: stores `Planitia Descensus` with min_lon == max_lon and a 0.00 km diameter)
+#: still needs an outline with an inside. Same floor `derive` is called with.
+VIEW_MIN_SIZE_DEG = 1.0
+
+#: The view path's sanity ceiling on a gazetteer bbox's longitude span, in place of
+#: `MAX_BBOX_SPAN_DEG` and for the reason in the module docstring: 8 deg is what a
+#: deep bake may not afford, not what a named area may be. Half the globe is the
+#: honest form of "no named area is this wide unless the record is broken"; the
+#: pole, which is the case that actually lies, is still `POLAR_LAT_LIMIT`'s.
+VIEW_MAX_BBOX_SPAN_DEG = 180.0
+
+#: The IAU descriptor codes that name an AREA rather than a point: the mare-class
+#: types D11 asks to be selectable. `PR` (promontorium, a 11-70 km headland) is
+#: deliberately out -- it is a point on a coast, not a box a user means by "the
+#: area of".
+VIEW_AREA_CODES = {'ME': 'mare', 'OC': 'oceanus', 'SI': 'sinus', 'LC': 'lacus',
+                   'PL': 'planitia'}
+
+#: `view_of_record`'s answer for a record outside `VIEW_AREA_CODES`. Reachable only
+#: from a direct call -- `view_regions` filters -- and present so the guard tests
+#: can aim the documented polar case at the same code path the mare views use.
+VIEW_KIND_FALLBACK = 'area'
+
+#: Keys that belong to a region and may never appear on a view. `main()` refuses to
+#: write an artifact that mixes them, because a view with a level range or a source
+#: is a bake promise nobody costed: `availability` and `cost` would stay at 7,106
+#: while the artifact claimed tiles for an outline. `src/lib/viewRegions.ts` refuses
+#: the same list, so writer and reader cannot disagree about which key put a view
+#: back into the bake. (`note` is not in it: prose promises no tiles, and the reader
+#: drops it like any other unmodelled key.)
+VIEW_BAKE_KEYS = frozenset({'minLevel', 'maxLevel', 'source', 'levels',
+                            'sizeDeg', 'centre', 'box', 'diameterKm'})
+
+
+def _split_seam(box):
+    """A lon/lat box as up to two rectangles that never run backwards.
+
+    Coordinates off the end of the domain fold the way `box_of` folds them (a west
+    edge below -180 comes back at +180), which is what a box padded around the
+    sub-antimeridian centre does. What is left over is the documented `west > east`
+    crossing: one set of tiles, two halves of a map, and an outline cannot be drawn
+    through either end, so the pair is returned instead. Every box this emits has
+    `west < east` and is inside -180..180 / -90..90, which is the promise
+    `src/lib/viewRegions.ts` refuses to take on trust.
+    """
+    west, south, east, north = box
+    if west < -180.0:
+        west += 360.0
+    if east > 180.0:
+        east -= 360.0
+    if west <= east:
+        return [[west, south, east, north]]
+    return [[west, south, 180.0, north], [-180.0, south, east, north]]
+
+
+def view_of_record(rec) -> dict:
+    """One selectable area, from a gazetteer record, read the way `derive` reads one.
+
+    The bbox is the footprint when it can be: not at the pole (`POLAR_LAT_LIMIT`,
+    the trap in the module docstring -- Shackleton stores 169 degrees of longitude
+    for a 20.9 km crater), not a record USGS got wrong (`KNOWN_BBOX_DEFECTS`, whose
+    bbox ships as `null` in features.json and is therefore untrusted here too), and
+    not wider than the globe-half ceiling. Otherwise the centre and diameter are
+    used, at the same size floor, and `derivedFrom` says which of the two it was --
+    so a cap drawn from a centre can never be mistaken for a mapped outline.
+    """
+    name = rec['name']
+    lon = labels.wrap_lon(rec['center_lon'])
+    lat = rec['center_lat']
+    boxes = None
+    source = 'centre+size'
+    usable = (rec.get('min_lon') is not None and rec.get('max_lon') is not None
+              and rec.get('min_lat') is not None and rec.get('max_lat') is not None
+              and abs(lat) < POLAR_LAT_LIMIT
+              and name not in labels.KNOWN_BBOX_DEFECTS)
+    if usable:
+        w, e = labels.wrap_lon(rec['min_lon']), labels.wrap_lon(rec['max_lon'])
+        span = (360.0 - w + e) if w > e else (e - w)
+        if span <= VIEW_MAX_BBOX_SPAN_DEG:
+            s, n = rec['min_lat'], rec['max_lat']
+            if n - s < VIEW_MIN_SIZE_DEG:
+                cy = (s + n) / 2.0
+                s, n = cy - VIEW_MIN_SIZE_DEG / 2, cy + VIEW_MIN_SIZE_DEG / 2
+            if span < VIEW_MIN_SIZE_DEG:
+                # The centre of the footprint, not of the west/east pair: on a
+                # crossing box the pair's mean is lon 0, the far side of the map.
+                cx = labels.wrap_lon(w + span / 2.0)
+                w, e = cx - VIEW_MIN_SIZE_DEG / 2, cx + VIEW_MIN_SIZE_DEG / 2
+            boxes = _split_seam([w, max(s, -90.0), e, min(n, 90.0)])
+            source = 'bbox'
+    if boxes is None:
+        half = max(VIEW_MIN_SIZE_DEG,
+                   ((rec.get('diameter') or 0.0)
+                    / grid.ARC_METRES_PER_DEGREE) * 1.5) / 2
+        boxes = _split_seam([lon - half, max(lat - half, -90.0),
+                             lon + half, min(lat + half, 90.0)])
+    return {
+        'id': slug(name), 'name': name,
+        'kind': VIEW_AREA_CODES.get((rec.get('code') or '').strip(),
+                                    VIEW_KIND_FALLBACK),
+        'boxes': boxes, 'derivedFrom': source,
+    }
+
+
+def constructed_views():
+    """The four areas a user names directly and the gazetteer has no record of.
+
+    The poles and the tidally-locked pair. Each is declared in the gazetteer's own
+    east-positive convention, in the -180..180 form, never as 0-360: the far side is
+    two boxes because its longitude really is [-180,-90] and [90,180], and the gap
+    between them is the near side, which the app must not paint twice.
+    """
+    cap = POLAR_CAP_LAT_DEG
+    return [
+        {'id': 'south-polar-cap', 'name': 'South Polar Cap', 'kind': 'polar-cap',
+         'boxes': [[-180.0, -90.0, 180.0, -cap]], 'derivedFrom': 'declared'},
+        {'id': 'north-polar-cap', 'name': 'North Polar Cap', 'kind': 'polar-cap',
+         'boxes': [[-180.0, cap, 180.0, 90.0]], 'derivedFrom': 'declared'},
+        {'id': 'near-side', 'name': 'Near Side', 'kind': 'hemisphere',
+         'boxes': [[-90.0, -90.0, 90.0, 90.0]], 'derivedFrom': 'declared'},
+        {'id': 'far-side', 'name': 'Far Side', 'kind': 'hemisphere',
+         'boxes': [[-180.0, -90.0, -90.0, 90.0], [90.0, -90.0, 180.0, 90.0]],
+         'derivedFrom': 'declared'},
+    ]
+
+
+def view_regions(records):
+    """The browsable collection: the four declared areas plus every mare-class name
+    the app already ships in `features.json`.
+
+    Built from `labels.curate`, not from the raw gazetteer, so a view can never name
+    an area the app cannot label, search for or credit. Sorted by name, so the
+    artifact's diff is a property of the geometry and not of the shapefile's row
+    order.
+    """
+    out = constructed_views()
+    kept = [r for r in labels.curate(records)
+            if (r.get('code') or '').strip() in VIEW_AREA_CODES
+            and r.get('name') and r.get('center_lat') is not None
+            and r.get('center_lon') is not None]
+    for rec in sorted(kept, key=lambda r: r['name']):
+        out.append(view_of_record(rec))
+    return out
+
+
 def main() -> int:
     zip_path = Path('public/data/MOON_nomenclature_center_pts.zip')
     if not zip_path.exists():
         zip_path = Path('tests/fixtures/moon_nomenclature_fixture.zip')
     records = labels.load_records(str(zip_path))
     regs = curated(records)
+    views = view_regions(records)
     avail = availability(regs)
     per_region = {r['id']: tile_count(r) for r in regs}
     union = distinct_tiles_by_level(regs)
@@ -425,12 +612,24 @@ def main() -> int:
                 f'tiles but its {len(rects)} rectangles add up to {claimed}. merge() '
                 f'is no longer a non-overlapping cover, so the plan cannot state a '
                 f'cost.')
+    for view in views:
+        stray = sorted(VIEW_BAKE_KEYS & set(view))
+        if stray:
+            raise AssertionError(
+                f'view {view["id"]!r} carries the region key(s) {stray}: a view is '
+                f'outline and framing geometry only, and a view with a level range '
+                f'or a source is a tile count nobody paid for.')
     data = {
         'schema': 1,
         'grid': {'tileSize': grid.TILE, 'yOrigin': 'north',
                  'latitudeType': 'planetocentric',
                  'radiusMeters': grid.MOON_RADIUS_M},
         'regions': regs,
+        # The browsable collection (D11). Deliberately after `regions` and before
+        # `availability`, and deliberately without a level range or a source: the
+        # two blocks below are computed from `regs` alone, so a view cannot be
+        # charged for a tile. Guarded rather than trusted -- see the note above.
+        'views': views,
         'availability': avail,
         'cost': {'tiles': distinct,
                  'overlap': sum(per_region.values()) - distinct,

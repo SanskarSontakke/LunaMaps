@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -459,3 +460,395 @@ def test_validate_availability_is_green_on_an_empty_plan():
     case; the caller only validates a block it actually found."""
     import manifest
     assert manifest.validate_availability({}, 7) == []
+
+
+# --- browsable views (D11): geometry with no bake promise --------------------
+#
+# `regions` is the bake plan. A region there carries a tile-count promise
+# (`cost.tiles`, `cost.tilesPerLevel`, `availability`), and `test_disk_guard`
+# asserts plan == delivery, so an area no measured source can honestly bake cannot
+# be in it -- which is exactly why the south polar cap left the plan on 2026-10-09
+# (docs/superpowers/specs/2026-10-08-amendment-2-resolution-and-browsing.md §7).
+#
+# D11 wants a different thing: selecting an area draws its outline, tints its
+# interior and frames the camera on it. None of that needs a single baked tile, so
+# it must not be paid for with one. `views` is that second collection, and the
+# tests below are the wall between the two: they pin the bake arithmetic against
+# the new key, and they pin that a view carries no bake vocabulary at all.
+
+VIEW_KEYS = frozenset({'id', 'name', 'kind', 'boxes', 'derivedFrom'})
+BAKE_KEYS = frozenset({'minLevel', 'maxLevel', 'source', 'cost', 'tiles',
+                       'tilesPerLevel', 'availability', 'perRegion'})
+CONSTRUCTED_IDS = ('south-polar-cap', 'north-polar-cap', 'near-side', 'far-side')
+
+
+def _views():
+    return _plan()['views']
+
+
+def _by_id(views):
+    return {v['id']: v for v in views}
+
+
+def _lonlat_in(box):
+    w, s, e, n = box
+    return -180.0 <= w <= 180.0 and -180.0 <= e <= 180.0 and \
+        -90.0 <= s <= 90.0 and -90.0 <= n <= 90.0
+
+
+def _covers(box, lon, lat):
+    """Containment under this repo's own convention: a view box is a drawn
+    rectangle (`west <= east`), so a plain comparison is the whole test."""
+    w, s, e, n = box
+    return w <= lon <= e and s <= lat <= n
+
+
+# --- the wall: the new key must not move the old arithmetic -------------------
+
+def test_adding_views_leaves_the_bake_arithmetic_exactly_where_it_was(
+        tmp_path, monkeypatch):
+    """The 7,106 invariant, stated as the thing not to break.
+
+    Every number the plan spends is recomputed from scratch with `views` present
+    and compared against the shipped artifact: if the view collection ever reached
+    `availability` or `cost`, this fails on the first differing key rather than on
+    a total that happens to look right."""
+    monkeypatch.setattr(regions, 'OUT', tmp_path / 'regions.json')
+    assert regions.main() == 0
+    wrote = json.loads((tmp_path / 'regions.json').read_text(encoding='utf-8'))
+    shipped = _plan()
+    assert 'views' in wrote, 'the regeneration did not emit views at all'
+    for key in ('schema', 'grid', 'regions', 'availability', 'cost'):
+        assert wrote[key] == shipped[key], f'{key} moved when views were added'
+    # key order too: `views` sits beside the collection it mirrors, so a diff of
+    # the artifact reads as an added block and not as a reshuffled file.
+    assert list(wrote) == ['schema', 'grid', 'regions', 'views',
+                           'availability', 'cost']
+
+
+def test_the_views_key_does_not_change_the_printed_summary(tmp_path, monkeypatch,
+                                                           capsys):
+    """The summary is what a human reads after a bake-plan run, and the task said
+    bit-for-bit: the line count and every figure in it are pinned, so a future
+    edit that lets a view into the cost print fails here instead of quietly
+    teaching someone that 61 areas cost 61 areas' worth of tiles."""
+    monkeypatch.setattr(regions, 'OUT', tmp_path / 'regions.json')
+    assert regions.main() == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == ('12 regions, 7106 tiles planned (7132 counted per region, '
+                        '26 shared), 3 levels')
+    assert len(lines) == 1 + 12 + 1, lines       # header, per-region, `wrote`
+    assert lines[1].startswith('  mare-orientale')
+    assert lines[-1].startswith('wrote ')
+
+
+def test_the_shipped_plan_and_the_shipped_views_are_one_reproducible_artifact(
+        tmp_path, monkeypatch):
+    """`test_main_writes_a_manifest_shaped_regions_file` only compared region
+    counts. The whole body is the artifact now: byte-identical output from
+    `main()` is what lets the reviewer diff `views` against the generator instead
+    of trusting a committed blob."""
+    monkeypatch.setattr(regions, 'OUT', tmp_path / 'regions.json')
+    assert regions.main() == 0
+    wrote = json.loads((tmp_path / 'regions.json').read_text(encoding='utf-8'))
+    shipped = _plan()
+    assert wrote == shipped, 'public/data/regions.json is stale vs main()'
+    assert (tmp_path / 'regions.json').read_bytes() == SHIPPED_PLAN.read_bytes()
+
+
+# --- a view carries no bake promise ------------------------------------------
+
+def test_a_view_is_geometry_and_a_name_and_nothing_else():
+    """No `minLevel`, no `maxLevel`, no `source`: that omission is the whole
+    separation. `availability` and `cost` iterate a region's `levels_of()`, so a
+    view that grew those keys would be silently charged for tiles it never asked
+    for -- and the plan would stop matching the 7,106 tiles on disk."""
+    for view in _views():
+        assert frozenset(view) == VIEW_KEYS, view
+        assert not frozenset(view) & BAKE_KEYS, view
+        assert isinstance(view['boxes'], list) and view['boxes'], view
+        for box in view['boxes']:
+            assert isinstance(box, list) and len(box) == 4, view
+            assert all(isinstance(v, float) for v in box), view
+
+
+def test_the_cost_table_is_still_keyed_by_the_bake_regions_only():
+    """`cost.perRegion` is a per-region truth. A view must not appear in it, and
+    the region set must not have grown: 12 regions, 12 cost entries, 3 levels."""
+    plan = _plan()
+    assert set(plan['cost']['perRegion']) == {r['id'] for r in plan['regions']}
+    assert len(plan['regions']) == 12
+    assert sorted(plan['availability'], key=int) == ['8', '9', '10']
+    assert plan['cost']['tiles'] == 7_106
+    assert plan['cost']['overlap'] == 26
+    assert plan['cost']['tilesPerLevel'] == {'8': 390, '9': 1404, '10': 5312}
+
+
+def test_the_polar_caps_are_views_now_and_are_still_not_in_the_bake_plan():
+    """The user's own example. The cap left the plan because neither measured
+    source could bake it honestly (amendment 2 §7), and it must not sneak back in
+    through the collection that exists to give it an outline: a framing region
+    needs no tiles."""
+    plan = _plan()
+    regions_in_plan = {r['id'] for r in plan['regions']}
+    assert 'south-polar-cap' not in regions_in_plan
+    assert 'north-polar-cap' not in regions_in_plan
+    assert {'south-polar-cap', 'north-polar-cap'} <= {v['id'] for v in _views()}
+    assert sum(plan['cost']['perRegion'].values()) == 7_132
+
+
+def test_main_refuses_to_write_a_view_that_grew_a_bake_key(tmp_path, monkeypatch):
+    """The same tripwire the reader has, on the writer's side, and unreachable
+    without it: `src/lib/viewRegions.ts` refuses a view carrying `minLevel` or
+    `source`, so a plan that emitted one would not merely be wrong arithmetic, it
+    would be a file the app cannot read at all. `main()` stops before the write."""
+    real = regions.view_regions
+
+    def grown(records):
+        views = real(records)
+        views[0]['minLevel'] = 8
+        views[0]['source'] = 'kaguya-tc'
+        return views
+
+    monkeypatch.setattr(regions, 'view_regions', grown)
+    monkeypatch.setattr(regions, 'OUT', tmp_path / 'regions.json')
+    with pytest.raises(AssertionError, match='minLevel'):
+        regions.main()
+    assert not (tmp_path / 'regions.json').exists()
+
+
+def test_the_shipped_file_actually_carries_the_view_collection():
+    """A guard is worth nothing if it is vacuous: the shipped file must have views
+    in it, and the collection must be the browse list D11 asked for -- the four
+    declared areas and every mare-class name, not one of them."""
+    views = _views()
+    assert views, 'public/data/regions.json has no views to validate'
+    assert {v['id'] for v in views} >= set(CONSTRUCTED_IDS)
+    assert len(views) >= 50, len(views)
+
+
+def test_the_two_collections_share_exactly_one_id_and_say_which_one_is_which():
+    """Mare Orientale is both a baked deep-zoom area and a browsable area, so the
+    two collections collide on that one slug. Pinned rather than allowed to drift:
+    a consumer that resolves 'mare-orientale' must know whether it is asking for
+    tiles (the region, which has levels) or for an outline (the view, which has
+    none). Every other view id is unique to `views`."""
+    plan = _plan()
+    overlap = {v['id'] for v in _views()} & {r['id'] for r in plan['regions']}
+    assert overlap == {'mare-orientale'}, overlap
+
+
+# --- the geometry ------------------------------------------------------------
+
+def test_every_view_has_a_box_and_every_box_is_inside_the_grid():
+    for view in _views():
+        assert len(view['boxes']) >= 1, view
+        for box in view['boxes']:
+            assert _lonlat_in(box), (view['id'], box)
+            w, s, e, n = box
+            assert n > s, (view['id'], box)
+            # A view box is DRAWN, so it may never run backwards: the `west > east`
+            # antimeridian form the gazetteer uses is correct as a set and
+            # undrawable as an outline, and the emitter splits those instead.
+            assert e > w, (view['id'], box)
+            # the gazetteer's east-positive convention, never a 0-360 form
+            assert e - w <= 360.0, (view['id'], box)
+
+
+def test_view_ids_are_unique_and_slugged():
+    ids = [v['id'] for v in _views()]
+    assert len(ids) == len(set(ids)), 'duplicate view id'
+    for view in _views():
+        assert view['id'] == regions.slug(view['name']), view
+        assert re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', view['id']), view
+
+
+def test_the_polar_caps_are_exactly_the_sixty_degree_bands():
+    """|lat| >= 60, the full width of the globe, and nothing else: the caps are
+    defined by latitude alone, so an accidental clip to the near side (or a cap
+    that quietly reaches 61) would mis-shade half the polar surface."""
+    views = _by_id(_views())
+    assert views['south-polar-cap']['boxes'] == [[-180.0, -90.0, 180.0, -60.0]]
+    assert views['north-polar-cap']['boxes'] == [[-180.0, 60.0, 180.0, 90.0]]
+    for vid in ('south-polar-cap', 'north-polar-cap'):
+        assert views[vid]['kind'] == 'polar-cap', vid
+        assert views[vid]['derivedFrom'] == 'declared', vid
+    # the two caps meet at +-60 and share no latitude band
+    south = views['south-polar-cap']['boxes'][0]
+    north = views['north-polar-cap']['boxes'][0]
+    assert south[3] == -regions.POLAR_CAP_LAT_DEG
+    assert north[1] == regions.POLAR_CAP_LAT_DEG
+    assert south[3] < north[1]
+    for lat in (-89.5, -60.0, -59.9, 0.0, 59.9, 60.0, 89.5):
+        hits = [v for v in (south, north) if v[1] <= lat <= v[3]]
+        assert len(hits) == (1 if abs(lat) >= 60.0 else 0), (lat, hits)
+
+
+def test_the_two_hemispheres_are_disjoint_and_cover_every_longitude_at_every_latitude():
+    """The tidally-locked pair -- the most useful two areas on the map, and the
+    pair most easily got wrong. Tested on the grid's own tile centres, so the
+    seams are discrete cells rather than arguments about whether -90 is inside one
+    box or the other: every column at every row belongs to exactly one hemisphere
+    and to no more."""
+    views = _by_id(_views())
+    near, far = views['near-side']['boxes'], views['far-side']['boxes']
+    assert views['near-side']['kind'] == views['far-side']['kind'] == 'hemisphere'
+    assert len(near) == 1, 'the near side is one contiguous box'
+    assert len(far) == 2, ('the far side is lon [-180,-90] and [90,180]: two boxes, '
+                           'which is why `boxes` is a list')
+    for L in (2, 5, 8):
+        cols, rows = grid.level_cols(L), grid.level_rows(L)
+        dlon, dlat = 360.0 / cols, 180.0 / rows
+        for x in range(cols):
+            lon = -180.0 + (x + 0.5) * dlon
+            for y in range(rows):
+                lat = 90.0 - (y + 0.5) * dlat
+                in_near = [_covers(b, lon, lat) for b in near].count(True)
+                in_far = [_covers(b, lon, lat) for b in far].count(True)
+                assert in_near + in_far == 1, (L, x, y, lon, lat)
+    # and the two are defined by longitude alone: neither clips a latitude band
+    for box in near + far:
+        assert (box[1], box[3]) == (-90.0, 90.0), box
+
+
+def test_the_hemispheres_do_not_redefine_the_caps_and_vice_versa():
+    """'Do not overlap by accident' is about the definitions, not the surface: the
+    south polar cap legitimately lies inside both hemispheres, and that is fine
+    for two outlines. What would be an accident is a cap whose longitude extent
+    was quietly narrowed to the near side, or a hemisphere whose latitude extent
+    was trimmed to the non-polar band. Both are asserted against here."""
+    views = _by_id(_views())
+    for vid in ('near-side', 'far-side'):
+        for box in views[vid]['boxes']:
+            assert (box[1], box[3]) == (-90.0, 90.0), vid
+    for vid in ('south-polar-cap', 'north-polar-cap'):
+        for box in views[vid]['boxes']:
+            assert (box[0], box[2]) == (-180.0, 180.0), vid
+
+
+# --- the mare / oceanus / major-area views -----------------------------------
+
+def test_every_feature_view_is_a_place_the_app_already_ships():
+    """`views` is derived from the curated set, not from the raw gazetteer: a view
+    for a name `features.json` does not carry would be an outline for an area the
+    app cannot label, search for, or credit."""
+    shipped_names = {f['properties']['name'] for f in json.loads(
+        (SHIPPED_PLAN.parent / 'features.json').read_text(encoding='utf-8')
+    )['features']}
+    declared = set(CONSTRUCTED_IDS)
+    for view in _views():
+        if view['id'] in declared:
+            continue
+        assert view['name'] in shipped_names, view
+        assert view['kind'] in set(regions.VIEW_AREA_CODES.values()), view
+
+
+def test_the_shipped_view_set_is_the_four_areas_plus_every_curated_mare_class_name(
+        records):
+    """Count and composition, pinned so an addition is a decision rather than a
+    side effect of a gazetteer update."""
+    kept = labels.curate(records)
+    want = [r for r in kept if (r.get('code') or '').strip()
+            in regions.VIEW_AREA_CODES]
+    views = _views()
+    assert len(views) == len(want) + len(CONSTRUCTED_IDS)
+    assert {v['kind'] for v in views} <= ({'polar-cap', 'hemisphere'}
+                                          | set(regions.VIEW_AREA_CODES.values()))
+
+
+def test_a_mare_wider_than_the_bake_ceiling_keeps_its_own_footprint(records):
+    """`MAX_BBOX_SPAN_DEG = 8.0` is a COST ceiling, not a statement about geometry,
+    and a view has no cost. 26 of the 57 mare-class areas are wider than 8 deg --
+    Mare Imbrium is 46.9 deg of longitude across -- so carrying the bake's ceiling
+    into the view path would replace their footprints with a 1-degree box at their
+    centre and frame Mare Imbrium like a crater."""
+    imbrium = {r['name']: r for r in records}['Mare Imbrium']
+    view = regions.view_of_record(imbrium)
+    assert view['derivedFrom'] == 'bbox', view
+    assert view['boxes'][0][2] - view['boxes'][0][0] > regions.MAX_BBOX_SPAN_DEG
+    # and the bake path still refuses it, unchanged: the same record, derived as a
+    # region, is a centre+size 1-degree box, because 8 deg is its cost ceiling.
+    as_region = regions.derive(records, ['Mare Imbrium'], min_size_deg=1.0,
+                               min_level=8, max_level=10)[0]
+    assert as_region['derivedFrom'] == 'centre+size'
+    assert as_region['box'][2] - as_region['box'][0] == pytest.approx(1.0)
+
+
+def test_a_polar_mare_falls_back_to_centre_and_size_and_says_so(records):
+    """The documented trap, in a view: Shackleton's gazetteer bbox spans 169 deg
+    of longitude for a 20.9 km crater, because every meridian meets at the pole.
+    A view of it must be a box around the crater, with `derivedFrom` recording
+    that the bbox was not used. The shipped set has the same case in a named
+    lacus, and it is pinned too."""
+    by_name = {r['name']: r for r in records}
+    shack = regions.view_of_record(by_name['Shackleton'])
+    span = max(r['max_lon'] for r in records if r['name'] == 'Shackleton') \
+        - min(r['min_lon'] for r in records if r['name'] == 'Shackleton')
+    assert span > 8.0, 'the fixture lost the polar bbox that motivated this guard'
+    assert shack['derivedFrom'] == 'centre+size', shack
+    w, s, e, n = shack['boxes'][0]
+    assert e - w <= 2.0 and n - s <= 2.0, shack
+    assert regions.POLAR_LAT_LIMIT <= abs(by_name['Shackleton']['center_lat'])
+    teneb = _by_id(_views())['lacus-tenebrarum']
+    assert teneb['derivedFrom'] == 'centre+size', teneb
+    assert abs(by_name['Lacus Tenebrarum']['center_lat']) > regions.POLAR_LAT_LIMIT
+
+
+def test_a_pinned_upstream_bbox_defect_is_not_read_as_a_footprint(records):
+    """`labels.KNOWN_BBOX_DEFECTS` ships `bbox: null` in features.json for a
+    reason: USGS did not get those geometries right, and "never use it" applies to
+    an outline exactly as it applies to a gate. Brill's box is stored in +/-180
+    while its centre is 0-360, so a view built from it would frame the wrong side
+    of the map; the centre+size fallback is the honest answer."""
+    brill = {r['name']: r for r in records}['Brill']
+    assert brill['name'] in labels.KNOWN_BBOX_DEFECTS
+    view = regions.view_of_record(brill)
+    assert view['derivedFrom'] == 'centre+size', view
+
+
+def test_a_crossing_footprint_is_split_into_two_drawable_boxes(records):
+    """The other half of why `boxes` is a list. A footprint that straddles the
+    antimeridian is legal gazetteer geometry -- the `west > east` rule in the
+    module docstring -- and it is one set of tiles but not one polygon. So the
+    view carries its two halves, and neither may run backwards or leave the grid."""
+    synthetic = {'name': 'Teste Mare', 'code': 'ME', 'type': 'Mare, maria',
+                 'center_lon': 180.0, 'center_lat': 10.0, 'diameter': 300.0,
+                 'min_lon': 170.0, 'max_lon': 190.0,
+                 'min_lat': 5.0, 'max_lat': 15.0}
+    view = regions.view_of_record(synthetic)
+    assert view['derivedFrom'] == 'bbox', view
+    assert len(view['boxes']) == 2, view
+    west_half, east_half = sorted(view['boxes'], key=lambda b: b[0])
+    assert west_half[0] == -180.0 and west_half[2] == -170.0, view
+    assert east_half[0] == 170.0 and east_half[2] == 180.0, view
+    for box in view['boxes']:
+        assert _lonlat_in(box) and box[2] > box[0]
+
+
+def test_view_boxes_are_the_footprint_padded_to_a_drawable_floor(records):
+    """Planitia Descensus is a *point* in the gazetteer: min_lon == max_lon and a
+    0.00 km diameter. An outline of nothing is not selectable and a zero-width
+    framing target is not a camera move, so a view box gets the same
+    `VIEW_MIN_SIZE_DEG` floor the bake path pads to -- and still calls itself a
+    bbox, because the centre came from the bbox."""
+    rec = {r['name']: r for r in records}['Planitia Descensus']
+    view = regions.view_of_record(rec)
+    assert view['kind'] == 'planitia', view
+    w, s, e, n = view['boxes'][0]
+    assert e - w >= regions.VIEW_MIN_SIZE_DEG - 1e-9, view
+    assert n - s >= regions.VIEW_MIN_SIZE_DEG - 1e-9, view
+    assert view['derivedFrom'] == 'bbox', view
+
+
+def test_the_view_path_and_the_bake_path_share_the_polar_guard(records):
+    """One constant, two consumers: `derive` and `view_of_record` must agree on
+    what "near enough to the pole that longitude has no meaning" means, or a
+    feature can be framed honestly in one and baked dishonestly in the other."""
+    recs = {r['name']: r for r in records}
+    for name in ('Shackleton', 'Lacus Tenebrarum'):
+        rec = recs[name]
+        assert abs(rec['center_lat']) >= regions.POLAR_LAT_LIMIT, name
+        assert regions.view_of_record(rec)['derivedFrom'] == 'centre+size'
+        assert regions.derive(records, [name], min_size_deg=1.0,
+                              min_level=8, max_level=10)[0]['derivedFrom'] == \
+            'centre+size'
