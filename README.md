@@ -172,6 +172,18 @@ is U+2019 on purpose):
 
 > NASA/GSFC/Arizona State University (LROC WAC mosaic) · NASA’s Scientific Visualization Studio (CGI Moon Kit) · USGS Astrogeology Science Center · IAU Gazetteer of Planetary Nomenclature
 
+## License and what it does not cover
+
+The code, tests and documentation here are MIT-licensed (`LICENSE`). **The license covers no
+imagery**, because this project holds no rights to grant: `NOTICE.md` lists each product,
+what its upstream actually states, and the one thing that has never been done — verifying
+the redistribution terms for the LROC, SVS and Kaguya TC derived rasters before publishing
+a deployment that serves them. The gazetteer is the only artifact with a written use
+constraint, and it says `Public domain.`
+
+The decision to deploy publicly is recorded in `docs/deploy.md`; the UI-only deployment it
+describes serves no imagery at all and is therefore outside that question.
+
 ## Known limits and open items
 
 - **Polar albedo hole (upstream, not a bake defect).** 35,183,101 of 536,870,912 level-5 `paper`
@@ -244,15 +256,17 @@ is U+2019 on purpose):
   bounds). Nothing on either side has been timed either - no tile-response measurement, no in-flight request
   count and no memory sample appears in `gate-G1.md`, `gate-G2.md`, any `verify-*.md`, or the controller's
   sweep. This is an unstarted requirement, not a passing one.
-- **`npm run dev` and `npm run build` require network at compile time.** `src/app/layout.tsx` imports `Geist`
-  and `Geist_Mono` from `next/font/google`, so the Next compiler fetches those font files from Google on
-  every `dev` and `build` and self-hosts the result. That cuts directly against the local-first decision this
-  file opens with: an offline fresh clone cannot compile the app, it fails on the font fetch instead of
-  degrading to a system font. It is also paying that cost for nothing - the only consumers of the emitted
-  `--font-geist-sans` / `--font-geist-mono` variables are in `src/app/page.module.css`, which
-  `grep -rn "page.module" src/` shows nothing imports (gate-G1's consequences list already records it as
-  orphaned), while `globals.css` sets `system-ui` stacks directly. Recorded, not fixed, in this pass: the fix
-  is a code change (a `next/font/local` swap with a vendored font, or dropping the import), and because no
-  build in this repo's evidence was ever run offline, the offline failure itself is inferred from how
-  `next/font/google` works rather than observed here.
-- **Open:** Gate G3 (Task 18 sweep) has not been run; the Tier B decision stands as declined.
+- **~~`npm run dev` and `npm run build` require network at compile time.~~ Fixed 2026-10-09.**
+  `src/app/layout.tsx` used to import `Geist` and `Geist_Mono` from `next/font/google`, so the
+  compiler fetched them from Google on every `dev` and `build` — an offline fresh clone could not
+  compile, and the only consumers of the emitted `--font-geist-*` variables were in
+  `src/app/page.module.css`, which nothing imports, while `globals.css` sets `system-ui` stacks
+  directly. The import is gone, which also removes the project's only build-time network egress;
+  `page.module.css` is now dead and should be deleted with the rest of the Task 18 sweep. Note
+  what the original bullet admitted and this correction does not change: the offline failure was
+  *inferred* from how `next/font/google` works, never observed, because no build in this repo's
+  evidence has ever been run offline.
+- **Open:** Gate G3 (Task 18 sweep) is in progress — the deep-zoom layer now has its first
+  composited captures (`work/ortho-shots/`, recorded in `gate-G3-live.md`), and the filter
+  sidebar, framing regions and performance budget are being built on top of it. The Tier B
+  decision stands as declined.

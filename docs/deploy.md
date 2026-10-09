@@ -122,3 +122,17 @@ pyramid is a file-selection job, not a re-bake:
 Deep zoom stays unavailable either way — 7,106 tiles and 188 MB is a lot of immutable
 history for a feature that only appears inside twelve boxes. `bake:deep` regenerates it in
 about nine minutes from the public COG whenever you want it locally.
+
+## 6. Two decisions taken on 2026-10-09, recorded where they can be found
+
+- **The deployment is public and indexable**, not access-restricted. That is a rights
+  question as much as a configuration one: the pyramid is derived imagery from LROC/ASU,
+  NASA SVS and JAXA/SELENE sources, and **nobody has verified that those bodies permit
+  redistributing derived rasters.** `NOTICE.md` states what each upstream actually says
+  (only the IAU gazetteer carries a written constraint: `Public domain.`) and what remains
+  unchecked. The attribution the app renders — `CREDIT` for the two baked layers,
+  `ORTHO_CREDIT` for the deep one — is the minimum that must survive any change here; it is
+  asserted in code, imported rather than retyped, precisely so a deployment cannot lose it
+  by editing a string in two places.
+- **The code is MIT; the data is not licensed by it.** `LICENSE` says so at the bottom and
+  `NOTICE.md` explains why: this repository cannot grant rights it does not hold.
