@@ -660,6 +660,39 @@ def test_a_one_layer_bake_carries_the_ortho_record(tmp_path):
         'carrying a foreign layer must not silence the writes this run made'
 
 
+def test_a_bake_with_no_data_raw_keeps_the_records_the_fetch_wrote(tmp_path,
+                                                                   monkeypatch):
+    """`data/raw/` is gitignored, and `fetch_data.py` writes `sha256.json` only after
+    the whole download loop -- so "tiles on disk, no digest record" is a demonstrated
+    state here, not a hypothetical: three background jobs on this branch were killed
+    mid-run. `run()` read that file or wrote `sources: []`, and `assets.ts:115`
+    refuses a manifest with no sources, so the very bake a user runs to recover from
+    an interrupted fetch would brick the app they were trying to fix -- and
+    `--reindex` could not undo it, because `sources` is a key `carry_foreign` is told
+    this run owns. `capabilities` and the earlier timing keys went the same way.
+    """
+    detail = fake_raster(tmp_path / 'detail.tif', count=1)
+    color = fake_raster(tmp_path / 'color.tif', count=4)
+    out = tmp_path / 'tiles'
+    shipped = json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8'))
+    shipped['timings']['deepStreamSeconds'] = 1234.5
+    manifest.write_manifest(out / 'manifest.json', shipped)
+    missing = tmp_path / 'no-such-directory'
+    monkeypatch.setattr(bake, 'SHA_PATH', missing / 'sha256.json')
+    monkeypatch.setattr(bake, 'CAPS_PATH', missing / 'capabilities.json')
+
+    bake.run(detail=detail, color=color, layers=('photo',), top=1, quality=85,
+             band_rows=512, k=0.4, out_dir=str(out), quiet=True)
+    m = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+    assert m['sources'] == shipped['sources'], \
+        'a bake with no digest file on disk deleted the source audit trail'
+    assert m['capabilities'] == shipped['capabilities'], 'capabilities dropped'
+    assert m['timings']['deepStreamSeconds'] == 1234.5, 'an earlier timing was erased'
+    assert m['timings']['bakeSeconds'] >= 0
+    assert parse_manifest_app(m) is not None, \
+        'assets.ts would refuse the manifest this recovery bake wrote'
+
+
 def test_baked_levels_ignores_a_layer_that_was_not_baked(tmp_path):
     (tmp_path / 'probe' / '1' / '0').mkdir(parents=True)
     (tmp_path / 'probe' / '1' / '0' / '0.jpg').write_bytes(b'x')

@@ -78,6 +78,45 @@ DEFAULT_CHUNK_SOURCE_ROWS = 4096
 MAX_CHUNK_PIXELS = 64 * 1024 * 1024
 ATTEMPTS = 3
 BACKOFF_SECONDS = 2.0
+
+# Measured on the delivered tree: 187,755,158 B over 7,106 tiles. JPEG size tracks
+# terrain contrast, not tile geometry, so this is an ESTIMATE for a plan over similar
+# ground and it is printed as one -- but it is the only number that tells an operator
+# whether the plan in front of them is 195 MB or 600 GB before the disk fills mid-run.
+BYTES_PER_TILE_MEASURED = 187_755_158 // 7_106
+
+
+def estimated_bytes(entries) -> int:
+    """Plan bytes for the disk guard: tiles x the measured per-tile size.
+
+    Sums the per-region counts, so a plan whose boxes overlap (apollo-15 inside
+    rima-hadley, 26 tiles) over-estimates by that overlap. Over-estimating is the
+    direction a free-space check has to err in.
+    """
+    return sum(e['tiles'] for e in entries) * BYTES_PER_TILE_MEASURED
+
+
+def product_layer_problem(layer, verb):
+    """Why this tool may not write into `paper` or `photo`, or None if it may.
+
+    `--layer` is free text, so both doors were one shell argument wide:
+    `--layer paper` streams the SHADED Kaguya orthophoto into the WAC albedo pyramid
+    -- the illumination-mixing ban, which is the reason `ortho` is a separate layer at
+    all, broken by a typo -- and `--publish --layer paper` overwrites the bake record
+    with an availability block, destroying quality, photometric, detailGain and the
+    baked/derived write counts while every guard inside `publish` stays green (the
+    presence check only asks that `paper` exists, and the post-write comparison
+    exempts the very layer being written).
+    """
+    if layer not in bake.PRODUCT_LAYERS:
+        return None
+    return (
+        f"{verb} layer {layer!r} is refused: {layer} is one of bake.py's two product "
+        f"pyramids (paper = LRO WAC albedo, photo = natural colour relief), and this "
+        f"path only ever streams the shaded Kaguya TC orthophoto. Writing it into "
+        f"{layer} mixes two illuminations into one pyramid, which the standing ban "
+        f"forbids, and publishing a record over {layer} would replace the bake's "
+        f"quality/photometric/detailGain with an availability block")
 # The gate is `source px/deg >= level px/deg`. `1.0 + tol` only absorbs the float
 # wobble in reading a scale back off a geotransform, so a source that is exactly
 # the level's grid is not refused for the crime of being representable.
@@ -181,6 +220,14 @@ def check_plan(entries) -> list[str]:
                             f"equirectangular. This path applies the grid's own "
                             f"lon/lat maths to it, which would bake {e['id']} at "
                             f"{levels} into a precise lie; refusing.")
+            # Stop at the projection. The px/deg comparison below asks whether the
+            # source resolves this grid's degrees, which has no answer for a
+            # projected pixel: a polar-stereographic file's metres-per-pixel cannot
+            # be divided by a degree once and called a fact at every latitude. The
+            # ledger ruled this cross-comparison dimensionally wrong in 2026-10-08
+            # and then left the row in SOURCES anyway, so the second message was
+            # reachable on the shipped data all along.
+            continue
         for L in e['levels']:
             need = grid.px_per_deg(L)
             have = float(src['pxPerDeg'])
@@ -467,6 +514,12 @@ def bake_all(entries, out_dir, *, opener=None, layer=DEFAULT_LAYER,
     tile, and never a region reported as success. Resume and `--force` belong to
     `bake.save_tile`.
     """
+    problem = product_layer_problem(layer, 'streaming into')
+    if problem:
+        raise Refusal(problem)
+    problem = product_layer_problem(layer, 'streaming into')
+    if problem:
+        raise Refusal(problem)
     open_ = opener or default_opener
     nap = sleep or _sleep
     written, failed = 0, []
@@ -635,6 +688,9 @@ def publish(out_dir, layer=DEFAULT_LAYER, *, regions_file=DEFAULT_REGIONS_FILE,
     as a success. `dry_run` computes, validates and reports the record but writes
     nothing.
     """
+    problem = product_layer_problem(layer, 'publishing')
+    if problem:
+        raise PublishRefusal(problem)
     out = Path(out_dir)
     mp = out / 'manifest.json'
     idx = _disk_tile_index(out, layer)
@@ -788,6 +844,12 @@ def print_plan(entries, total, per_level, args) -> None:
     print(f'  total {total} tiles')
     print('  per level ' + ' '.join(f'L{L}: {n}'
                                     for L, n in sorted(per_level.items())))
+    est = estimated_bytes(entries)
+    free = bake.free_bytes_at(args.out)
+    print(f'  {est:,} B est. ({est / 1e9:.2f} GB) at the measured '
+          f'{BYTES_PER_TILE_MEASURED:,} B/tile off the delivered ortho tree')
+    print(f'  {free:,} B ({free / 1e9:.2f} GB) free at {args.out}; refuses below '
+          f'{bake.DISK_HEADROOM:g}x the estimate')
 
 
 def _publish_main(args) -> int:
@@ -852,6 +914,23 @@ def main(argv=None) -> int:
         for L, n in e['tilesPerLevel'].items():
             per_level[L] = per_level.get(L, 0) + n
     print_plan(entries, total, per_level, args)
+
+    # The disk guard `bake.py` has always had, applied to this path too. A
+    # `--regions` file is operator-editable JSON: the same shape that cost 195 MB
+    # here costs hundreds of GB widened toward a cap, and filling the volume
+    # mid-write leaves a partial tree that `--publish` would then report as truth.
+    est = estimated_bytes(entries)
+    ok, needed = bake.check_disk_or_abort({'bytes': est},
+                                          bake.free_bytes_at(args.out))
+    if not ok and not args.dry_run:
+        free = bake.free_bytes_at(args.out)
+        print(f'REFUSING TO STREAM: this plan needs {needed:,} B '
+              f'({needed / 1e9:.2f} GB) free = {bake.DISK_HEADROOM:g}x the '
+              f'estimated {est:,} B ({est / 1e9:.2f} GB), and {args.out} sits on a '
+              f'volume with {free:,} B ({free / 1e9:.2f} GB) free. Bake a smaller '
+              f'plan with --only REGION-ID, drop levels from the region, or point '
+              f'--out at a bigger volume.', file=sys.stderr)
+        return 2
 
     if args.dry_run:
         print('dry run: nothing written')

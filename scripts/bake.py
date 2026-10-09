@@ -47,6 +47,12 @@ OUT_DEFAULT = 'public/tiles'
 # both, and `LayerName` in src/types.ts is exactly this pair). `probe` is the
 # Task 2 gate fixture, not a product layer, and is never baked through here.
 PRODUCT_LAYERS = ('paper', 'photo')
+
+# Written by `fetch_data.py`, gitignored, and only complete once the whole download
+# loop has finished -- so "tiles on disk, no digest file" is a state this branch has
+# actually been in (three background jobs were killed mid-run). See `source_records`.
+SHA_PATH = Path('data/raw/sha256.json')
+CAPS_PATH = Path('data/raw/capabilities.json')
 # MEASURED, not guessed: Tier A both layers at q85, from the committed
 # public/tiles/manifest.json written by the 2 h 58 min bake recorded in
 # docs/superpowers/specs/bake-log.md §4. bits = bytes * 8 / (512 * 512) over the
@@ -367,6 +373,25 @@ def carry_foreign(prev: dict, m: dict, baked) -> list:
     return carried
 
 
+def source_records(path, prev: dict, key: str):
+    """The record `fetch_data.py` wrote if it is there, else the one already in the
+    delivered manifest -- never an empty stand-in.
+
+    `carry_foreign` is told `sources` and `capabilities` are keys this run owns, and
+    that is only true when the fetch that produces them completed. Writing
+    `sources: []` bricks the app rather than degrading it: `assets.ts:115` refuses a
+    manifest with no sources, so the recovery bake a user runs after an interrupted
+    fetch -- the exact state the three killed background jobs on this branch left
+    behind -- produced "manifest.json is not compatible with this build" for a pyramid
+    that was fine, and `--reindex` could not undo it because the empty list was already
+    the value this run "owned".
+    """
+    p = Path(path)
+    if p.exists():
+        return json.loads(p.read_text(encoding='utf-8'))
+    return prev.get(key)
+
+
 def layer_record(out: Path, layer: str, quality, detail_gain,
                  top: int | None = None,
                  counts: tuple[int, int] | None = None) -> dict:
@@ -457,12 +482,15 @@ def run(detail: str, color: str, layers=PRODUCT_LAYERS, top: int = 6,
         m['layers'][layer] = rec
     # Layers and keys this run has no business rebuilding (see `carry_foreign`).
     carry_foreign(prev_manifest, m, layers)
-    sha = Path('data/raw/sha256.json')
-    m['sources'] = json.loads(sha.read_text()) if sha.exists() else []
-    m['timings']['bakeSeconds'] = round(time.time() - t0, 1)
-    if Path('data/raw/capabilities.json').exists():
-        m['capabilities'] = json.loads(
-            Path('data/raw/capabilities.json').read_text())
+    m['sources'] = source_records(SHA_PATH, prev_manifest, 'sources') or []
+    caps = source_records(CAPS_PATH, prev_manifest, 'capabilities')
+    if caps:
+        m['capabilities'] = caps
+    # Timings accumulate: `bakeSeconds` is this run, and whatever an earlier stage
+    # measured (a deep-stream time, a proof duration) belongs to the artifact, not to
+    # the run that last happened to rewrite the file.
+    m['timings'] = {**(prev_manifest.get('timings') or {}),
+                    'bakeSeconds': round(time.time() - t0, 1)}
     manifest_mod.write_manifest(out / 'manifest.json', m)
     if not quiet:
         print(f'baked {baked} new tiles + {derived} derived parents = '
@@ -499,12 +527,10 @@ def reindex(out_dir: str = OUT_DEFAULT, layers=PRODUCT_LAYERS,
             out, layer, carried.get('quality'),
             carried.get('detailGain', None if layer == 'paper' else 0.4))
         m['layers'][layer] = rec
-    sha = Path('data/raw/sha256.json')
-    m['sources'] = (json.loads(sha.read_text(encoding='utf-8'))
-                    if sha.exists() else prev.get('sources', []))
-    caps = Path('data/raw/capabilities.json')
-    m['capabilities'] = (json.loads(caps.read_text(encoding='utf-8'))
-                         if caps.exists() else prev.get('capabilities', {}))
+    m['sources'] = source_records(SHA_PATH, prev, 'sources') or []
+    caps = source_records(CAPS_PATH, prev, 'capabilities')
+    if caps:
+        m['capabilities'] = caps
     m['timings'] = prev.get('timings', {})
     carried = carry_foreign(prev, m, layers)
     m['reindex'] = {

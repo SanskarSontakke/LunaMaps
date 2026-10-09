@@ -260,16 +260,95 @@ def test_an_unknown_source_key_is_a_named_problem():
 
 def test_a_polar_stereographic_source_is_refused_by_name():
     """A polar-stereographic mosaic read with this grid's maths would bake a
-    pretty, precise lie, so the plan refuses it before opening anything."""
+    pretty, precise lie, so the plan refuses it before opening anything.
+
+    `pxPerDeg` is the figure measured off the real SPOLE header (1011.71), not a
+    generous stand-in: at 30,000 the resolution comparison below the projection
+    refusal cannot fire, so the fixture used to guarantee that only ONE problem was
+    ever reported. 1011.71 is below L9's 1456.36, so this now proves the projection
+    refusal is the only message a non-equirectangular source ever gets -- comparing
+    degrees-per-pixel of a projected pixel against this grid's is dimensionally
+    meaningless, and saying so twice is worse than saying the true thing once.
+    """
     entries = stream_bake.plan(
-        [region('cap', box=[-180.0, -90.0, 180.0, -84.0], lo=8, hi=8,
+        [region('cap', box=[-180.0, -90.0, 180.0, -84.0], lo=8, hi=9,
                 source='stereo')],
         sources=source_table(PX0, extra={'stereo': {
-            'url': TEST_URL, 'pxPerDeg': 30_000.0,
+            'url': TEST_URL, 'pxPerDeg': 1011.71,
             'projection': 'polar-stereographic', 'shaded': True}}))
     problems = stream_bake.check_plan(entries)
-    assert len(problems) == 1
+    assert len(problems) == 1, problems
     assert 'stereo' in problems[0] and 'polar-stereographic' in problems[0]
+
+
+def test_baking_into_a_product_layer_is_refused_by_name(global_path, tmp_path):
+    """`--layer` is free text, so `--layer paper` streams Kaguya TC's SHADED
+    orthophoto pixels into the WAC albedo pyramid and writes them into the tree the
+    app shows as flat relief. The illumination-mixing ban -- the standing rule this
+    whole layer exists to respect -- was enforced by nothing but the operator typing
+    the default. The pipeline would only notice afterwards, through
+    `test_disk_guard.py`'s pinned paper.bytes."""
+    entries = plan_of(region('wide', lo=1, hi=1))
+    open_, _, _ = opener_for(global_path)
+    for product in ('paper', 'photo'):
+        with pytest.raises(stream_bake.Refusal) as raised:
+            stream_bake.bake_all(entries, tmp_path / 'tiles', opener=open_,
+                                 layer=product, quality=100)
+        assert product in str(raised.value) and 'shaded' in str(raised.value)
+    assert not (tmp_path / 'tiles').exists(), 'a refused layer still wrote a tree'
+
+
+def test_publishing_onto_a_product_layer_is_refused(global_path, tmp_path):
+    """The same door on the other side: `publish(out, 'paper')` overwrites the bake
+    record with an availability block and `source: null`, destroying quality,
+    photometric, detailGain and the baked/derived write counts. Every guard in
+    publish stayed green doing it -- the presence check only asks that `paper`
+    EXISTS, and the post-write comparison exempts the very layer being written."""
+    out = tmp_path / 'tiles'
+    bake_wide_l1(out, global_path)
+    make_manifest(out)
+    raw = (out / 'manifest.json').read_bytes()
+    for product in ('paper', 'photo'):
+        with pytest.raises(stream_bake.PublishRefusal) as raised:
+            stream_bake.publish(out, product, regions_file=tmp_path / 'nope.json')
+        assert product in str(raised.value)
+    assert (out / 'manifest.json').read_bytes() == raw, 'a refused publish wrote'
+
+
+def test_the_streaming_run_checks_free_space_before_it_opens_anything(
+        tmp_path, monkeypatch, capsys, cli_plan):
+    """Amendment §4 tells the operator "the bake guard already refuses to run without
+    1.5x its estimate", and for `bake.py` that is true. `stream_bake.py` could not
+    reach it: it imports `bake` only for `save_tile`, and its own plan report prints
+    tile counts with no bytes and no volume. A `--regions` file is operator-editable
+    JSON, so enlarging it toward a polar cap or a global L10 would start writing and
+    fill the disk mid-run -- and rule 4 would then honestly publish the partial tree.
+    """
+    out = tmp_path / 'tiles'
+    open_, _, _ = opener_for(global_path)
+    monkeypatch.setattr(stream_bake, 'default_opener', open_)
+    monkeypatch.setattr(stream_bake.bake, 'free_bytes_at', lambda p: 1)
+    argv(monkeypatch, '--regions', str(cli_plan), '--out', str(out))
+    assert stream_bake.main() == 2
+    err = capsys.readouterr().err.lower()
+    assert 'free' in err and 'gb' in err.replace(' ', '')
+    assert not out.exists(), 'the disk guard ran after the writes'
+
+
+def test_the_plan_reports_its_byte_estimate_and_the_volume_it_writes_to(
+        tmp_path, monkeypatch, capsys, global_path):
+    """Bytes, not just tiles: 7,106 tiles was a 195 MB run and a cap-shaped plan is
+    gigabytes, and the only number that decides whether to press enter is the one
+    that used to be missing."""
+    plan_file = tmp_path / 'regions.json'
+    plan_file.write_text(json.dumps({'schema': 1, 'regions': [
+        region('wide', lo=1, hi=1)]}), encoding='utf-8')
+    monkeypatch.setitem(regions.SOURCES, 'test-cog', source_table(PX0)['test-cog'])
+    argv(monkeypatch, '--regions', str(plan_file), '--out', str(tmp_path / 'tiles'),
+         '--dry-run')
+    assert stream_bake.main() == 0
+    printed = capsys.readouterr().out
+    assert 'B est.' in printed and 'free' in printed, printed
 
 
 def test_the_resolution_gate_refuses_a_level_the_source_cannot_pay_for():
