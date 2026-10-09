@@ -98,10 +98,10 @@ change.
 - **Mouse drag, wheel zoom, keyboard pan** — never driven as real input events.
 - **The ±180° strip and the poles as rendered pixels**; the numerical seam checks live in
   `tierA-check-transcript.txt`, not in an image.
-- **Frame rate during rotation**, and every figure in spec §4.5's performance budget:
-  ≤16 concurrent tile requests is not implemented (no `maximumScreenSpaceError` or
-  scheduling config anywhere in `src/`), and median tile latency, time-to-paint and tab
-  memory were never measured.
+- **Time-to-first-paint** from a cold boot is still unmeasured. The rest of spec §4.5's
+  budget — latency, concurrency, memory and frame rate — was measured on 2026-10-09 and is
+  recorded in §9 below, including the part that is still true: the ≤16 concurrent-request
+  clause is met by Cesium's defaults, because nothing in `src/` configures the request path.
 - **A cold offline clone.** `src/app/layout.tsx` loads fonts through `next/font/google`,
   so `npm run dev` / `npm run build` need network at compile time; not exercised here.
 - **Tier B** (`--top 7`): never run, per the human's opt-in decision. Projected from
@@ -241,3 +241,62 @@ takes it out of every dev capture, so what `npm run dev` shows is what ships.
 Amendment 2 §5 item 5 — the declutter cell assuming a 900 px viewport that is never read
 from the canvas — is untouched by this wave, and now more visible rather than less: the
 default view shows the whole disc with every tier on screen.
+
+## 9. Spec §4.5's performance budget, measured — 2026-10-09
+
+Produced by `work/perf_budget_probe.mjs` against `npm run dev` on localhost in headless
+Chrome with SwiftShader (`--enable-unsafe-swiftshader --use-angle=swiftshader`). The
+peak/median/p95 arithmetic lives in `src/lib/perfBudget.ts` — the probe imports it, so
+there is one implementation of the math and `src/test/perfBudget.test.ts` (21 tests)
+drives it with hand-built intervals. Raw runs: `work/perf-budget-baseline.json` (8),
+`work/perf-budget-sweep.json` (20), `work/perf-budget-memory.json` (4 steps).
+
+**Two different quantities get confused, so they are reported separately.** *Wire*
+concurrency is the maximum number of overlapping `[startTime, responseEnd]` windows in
+`PerformanceResourceTiming` — what actually reached the network. *Issued* concurrency is
+the same overlap computed over Cesium's own request records, so it includes requests the
+scheduler has opened but the browser is still holding behind a socket limit. The clause
+about "no more than 16 simultaneous tile requests" is a statement about the wire, and the
+issued number is printed next to it because a gap between the two is the queue backing up.
+
+| §4.5 clause | spec | measured | verdict |
+|---|---|---|---|
+| median tile response | < 150 ms | **0.5–3.3 ms** across all 28 conditions; worst p95 42.5 ms (`globe-home` at SSE 1) | **met**, 45× margin at the median |
+| ≤ 16 simultaneous tile requests | enforced, not hoped for | wire peak **1–8** (max 8, `globe-home` at SSE 1); issued peak reached exactly **16** at SSE 1, 11 at the default SSE 2 | **met in practice, not enforced by this app** — see below |
+| tab < 1.2 GB after 50 tile fetches | 50 fetches | 60 tiles fetched: JS heap peak **113 MB**, renderer working set **749–766 MB**, process working set **1,184–1,254 MB** | **met on the heap and the renderer**; the process total is reported and *not* claimed as the clause's answer |
+| L0 globe painted < 3 s after first paint | 3 s | never captured. What was captured is settling after a camera move: **627–917 ms** over 16 conditions, `moveToSettledMs` 785 ms inside a deep region | **not answered** |
+| frame rate during drag-rotate | reported, not asserted | rAF gaps with `requestRenderMode` temporarily off: globe p50 **68.9–94.8 ms**, p95 75.4–111.6 ms; paper p50 **109.9–137.2 ms**, p95 up to 177.2 ms | reported: **7–14 fps on a software rasteriser**, and paper is the slower mode |
+
+Three things that only say something if you read the numbers, so they are said plainly:
+
+1. **Nothing in `src/` sets `maximumScreenSpaceError`.** The probe read the effective
+   value back as `2`, which is Cesium's default, and
+   `Cesium.RequestScheduler.maximumRequestsPerServer` read back as `null` — the property
+   the spec names as the enforcement point was not observable through the path the probe
+   used. So the ≤16 clause is satisfied by the default's arithmetic, not by a decision
+   recorded in this repository. The sweep forced SSE to 1/1.5/2/3 at runtime to get the
+   curve; that is a measurement, not a configuration.
+2. **The budget is not the binding constraint at any of these settings — the declutter
+   and the screen are.** Tightening `maximumScreenSpaceError` from 3 to 1 at
+   `globe-home` raises wire requests from 2 to 18 and wire peak from 3 to 8, while globe
+   frame time moves 68.9 → 93.0 ms p50: the cost is real and it is mostly request count,
+   not pixels. In paper mode the same sweep goes 16 → 48 requests and 110 → 137 ms p50,
+   which is why paper is the slower of the two modes despite having no sphere to shade.
+   Note that Cesium's own `tilesToRender` counter moves the *other* way over the same
+   sweep (16 at SSE 3 down to 4 at SSE 1). It is a settled-frame quantity and the probe
+   reads it once, after settling, so a tighter tolerance finds fewer tiles still pending
+   rather than fewer tiles on screen — the request count is the number to reason from, and
+   this is why the table above does not quote `tiles-to-render` at all.
+3. **`tiles-to-render` and `tiles-painted` differ by design, and only in one row.** At
+   `inside-region-8km` with SSE 2 the base layer had 5 tiles in the queue and 10 were
+   painted, because the `ortho` overlay paints on top of the base tiles it is stacked
+   over. Every other row agrees. A future reader should not spend time on it.
+
+What this changes about the two claims that used to point here: gate G3 §5's "every figure
+in spec §4.5 … never measured" and amendment 2 §3's "no latency or memory measurement" are
+both superseded by this section. What survives them, and is now the open item, is the
+*normative* half: this app does not configure the request path at all, so if a deployment
+serves tiles from a distant CDN instead of localhost, the 0.5–3.3 ms median becomes an
+unmeasured number and the default that happens to keep concurrency under 16 is the only
+thing standing between the client and a queue. That is a decision to make before a
+deployment that needs it, not a defect to fix in this branch.

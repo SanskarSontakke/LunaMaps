@@ -113,8 +113,14 @@ and verified, so `npm run bake -- --top 7` was started on 2026-10-08 from held s
 - ~~Compass rose is clipped under the top control bar in flat mode.~~ There is no compass
   rose: that badge is the Next.js dev-mode indicator (`NEXTJS-PORTAL`), which does not
   exist in a production build. `devIndicators: false` removes it from dev captures.
-- Spec §4.5's performance budget is still unimplemented: no `maximumScreenSpaceError`, no
-  tile-request concurrency cap, no latency or memory measurement.
+- Spec §4.5's performance budget: the measurement half landed on 2026-10-09 and is in
+  `gate-G3-live.md` §9 (median tile response 0.5–3.3 ms, wire peak concurrency 1–8 against
+  the ≤16 clause, JS heap 113 MB after 60 deep tiles, globe 69–95 ms p50 / paper 110–137 ms
+  p50 under SwiftShader). What is still true of the original complaint is the normative
+  half: there is no `maximumScreenSpaceError` and no request-concurrency config anywhere in
+  `src/`, so the clause holds by Cesium's default rather than by a decision — and a
+  deployment that serves tiles from a distant CDN rather than localhost inherits an
+  unmeasured latency there.
 
 ## 4. Cost picture, to be re-measured not re-asserted
 
