@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the documented template, which is the only place the deployment's one
+# build-time setting is explained. `.env*` matched it, so a fresh clone never saw that
+# NEXT_PUBLIC_TILE_BASE_URL existed at all -- an ignored example file is a missing file.
+!.env.example
 
 # vercel
 .vercel

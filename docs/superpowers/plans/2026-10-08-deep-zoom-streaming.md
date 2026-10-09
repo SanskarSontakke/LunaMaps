@@ -44,8 +44,10 @@ latitude edge, not the site boxes.
 
 *Amended 2026-10-09, after both polar sources were measured: the knob was used and the
 cap is gone.* Amendment §7 has the coverage sweep, the grid's 20.8 m/px latitude ceiling
-at L9 and the spoke-to-bbox read amplification. The plan is now **12 regions and 7,132
-tiles** (7,106 distinct — apollo-15's box lies inside rima-hadley's and shares 26 tiles),
+at L9 and the spoke-to-bbox read amplification. The plan is now **12 regions and 7,106
+tiles** — the distinct union, which is the number the artifact reports. The per-region
+sum is 7,132, because apollo-15's box lies inside rima-hadley's and shares 26 tiles;
+`cost.overlap` states that instead of leaving the next reader to re-derive it,
 and every one of them is baked: `test_disk_guard.py` asserts plan == delivery, so the
 dead-weight cost estimate this paragraph carried for a day cannot come back silently.
 

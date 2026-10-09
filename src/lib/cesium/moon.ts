@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import type { LayerName, Mode } from '@/types';
+import { tileTemplate } from '@/lib/tileSource';
 
 export type { LayerName, Mode };
 
@@ -103,7 +104,7 @@ export const CREDIT = new Cesium.Credit(
 
 export function makeProvider(layer: LayerName, top: number) {
   return new Cesium.UrlTemplateImageryProvider({
-    url: `/tiles/${layer}/{z}/{x}/{y}.jpg`,
+    url: tileTemplate(layer),
     tilingScheme: new Cesium.GeographicTilingScheme({ ellipsoid: MOON_ELLIPSOID }),
     tileWidth: TILE_SIZE,
     tileHeight: TILE_SIZE,

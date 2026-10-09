@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Manifest } from '@/types';
+import { ManifestError } from '@/lib/manifestError';
 import NoAssets from '@/components/NoAssets';
 import ErrorPanel from '@/components/ErrorPanel';
 import {
@@ -173,25 +174,56 @@ describe('runBoot', () => {
 
   it('sends an absent manifest to the unbaked panel with the whole pipeline', async () => {
     const s = await runBoot(
-      deps({ loadManifest: () => Promise.reject(new Error('manifest.json HTTP 404')) }),
+      deps({
+      loadManifest: () =>
+        Promise.reject(
+          new ManifestError('http', 'manifest.json HTTP 404', {
+            status: 404,
+            url: '/tiles/manifest.json',
+          }),
+        ),
+    }),
     );
-    expect(s).toEqual({ phase: 'assets', missing: ['tiles/manifest.json'] });
+    expect(s).toEqual({ phase: 'assets', missing: ['/tiles/manifest.json'] });
     expect(assetCommands(s.phase === 'assets' ? s.missing : [])).toContain('npm run fetch');
   });
 
-  it('keeps an incompatible manifest on the error panel, not the bake hint', async () => {
+  it('routes by the error type, not by the wording it happens to carry', async () => {
+    // The whole finding: this used to be `kind === 'assets' && !/not compatible/i` with
+    // the producer's sentence re-typed here. Reword `assets.ts` and every malformed
+    // manifest silently became "Imagery has not been baked yet" plus a bake command
+    // that cannot fix it. The message below deliberately contains no recognizable word
+    // at all: if the routing still lands on the error panel, it is the type deciding.
+    const shaped = 'shape does not match';
     const s = await runBoot(
       deps({
         loadManifest: () =>
-          Promise.reject(new Error('manifest.json is not compatible with this build')),
+          Promise.reject(
+            new ManifestError('incompatible', shaped, { url: '/tiles/manifest.json' }),
+          ),
       }),
     );
-    expect(s).toEqual({
-      phase: 'error',
-      step: 'manifest',
-      kind: 'assets',
-      message: 'manifest.json is not compatible with this build',
-    });
+    expect(s).toEqual({ phase: 'error', step: 'manifest', kind: 'unknown', message: shaped });
+
+    // Same situation, untyped: the classifier reads "manifest.json" in the text and
+    // sends the user to the unbaked-imagery panel with a bake command. That difference
+    // is the coupling this removes, written as a pair so a future edit cannot quietly
+    // restore it — and it is why `loadManifest` now throws the typed error at all.
+    const untyped = await runBoot(
+      deps({
+        loadManifest: () => Promise.reject(new Error('manifest.json shape does not match')),
+      }),
+    );
+    expect(untyped).toEqual({ phase: 'assets', missing: ['tiles/manifest.json'] });
+  });
+
+  it('still routes an untyped fetch failure by its text, which is all there is', async () => {
+    // A `fetch` rejection or a Cesium worker 404 arrives untyped, so the classifier
+    // stays as the fallback rather than being deleted along with the coupling.
+    const s = await runBoot(
+      deps({ loadManifest: () => Promise.reject(new Error('manifest.json HTTP 404')) }),
+    );
+    expect(s).toEqual({ phase: 'assets', missing: ['tiles/manifest.json'] });
   });
 
   it('names the tile paths the probe could not fetch', async () => {

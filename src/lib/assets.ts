@@ -14,6 +14,8 @@ import {
   levelCols,
   levelRows,
 } from '@/lib/grid';
+import { manifestUrl, tilePath } from '@/lib/tileSource';
+import { ManifestError } from '@/lib/manifestError';
 
 const EXPECTED_SCHEMA = 1;
 // The baked pyramids span levels 0..MAX_TOP_LEVEL. A layer's `top` becomes
@@ -53,9 +55,11 @@ const isTileRange = (v: unknown): v is TileRange =>
  * Python side honest by re-validating the shipped manifest against a
  * transcription of this function and comparing against `validate_availability`.
  *
- * Returns `null` for "refuse the whole manifest". An absent block is `{}` —
- * a layer with no recorded availability, which the UI reports as unavailable
- * (never as "assume the whole globe").
+ * Returns `null` for "this record is unusable". Since the fix for the review's
+ * malformed-optional-block finding, the caller does not refuse the manifest on that
+ * answer — it drops `layers.ortho`, keeps `paper`/`photo`, and records the reason in
+ * `warnings`. An absent block is `{}` — a layer with no recorded availability, which
+ * the UI reports as unavailable (never as "assume the whole globe").
  */
 function parseAvailability(value: unknown, top: number): Availability | null {
   if (value === undefined) return {};
@@ -137,13 +141,37 @@ export function parseManifest(value: unknown): Manifest | null {
 
   // Optional by design: the delivered manifest carries no ortho record until the
   // streaming bake writes one, and `paper`/`photo` must keep booting either way.
-  // An absent record is no record; a present but malformed one refuses the file.
+  //
+  // A present but *malformed* record degrades instead of refusing the file. The old
+  // behaviour returned `null` for the whole manifest, so one bad optional block took
+  // the base layers down with it and the panel told the user imagery had not been
+  // baked at all -- a misdiagnosis that sends them to `npm run bake` when the real
+  // problem is one range in one optional block. Deep zoom goes off, with the reason
+  // carried forward in `warnings` so the interface can say it out loud.
   let ortho: OrthoLayerRecord | undefined;
+  const warnings: string[] = [];
   if (layers.ortho !== undefined) {
-    if (!isRecord(layers.ortho) || !isBakedTop(layers.ortho.top)) return null;
-    const availability = parseAvailability(layers.ortho.availability, layers.ortho.top);
-    if (availability === null) return null;
-    ortho = { top: layers.ortho.top, availability };
+    if (!isRecord(layers.ortho) || !isBakedTop(layers.ortho.top)) {
+      warnings.push('layers.ortho is present but its shape or top level is not valid');
+    } else {
+      const availability = parseAvailability(layers.ortho.availability, layers.ortho.top);
+      if (availability === null) {
+        warnings.push(
+          `layers.ortho.availability names tiles outside the level grid at L${layers.ortho.top}`,
+        );
+      } else {
+        ortho = {
+          top: layers.ortho.top,
+          availability,
+          // Which product the pixels came from, if the record says. The control's
+          // wording is built from this so it cannot name a mission the layer does not
+          // have; see `orthoSourcePhrase`.
+          ...(typeof layers.ortho.source === 'string' && layers.ortho.source !== ''
+            ? { source: layers.ortho.source }
+            : {}),
+        };
+      }
+    }
   }
 
   return {
@@ -169,17 +197,45 @@ export function parseManifest(value: unknown): Manifest | null {
       photo: { top: photo.top },
       ...(ortho ? { ortho } : {}),
     },
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 
 export const layerTop = (m: Manifest, layer: 'paper' | 'photo') =>
   m.layers[layer].top;
 
+/**
+ * Re-exported so existing imports keep working. The class itself lives in
+ * `src/lib/manifestError.ts`: `diagnostics.ts` must be able to test for it without
+ * importing this module, which carries React and `fetch`.
+ */
+export { ManifestError } from '@/lib/manifestError';
+export type { ManifestErrorKind } from '@/lib/manifestError';
+
 export async function loadManifest(): Promise<Manifest> {
-  const r = await fetch('/tiles/manifest.json', { cache: 'no-store' });
-  if (!r.ok) throw new Error(`manifest.json HTTP ${r.status}`);
+  const url = manifestUrl();
+  let r: Response;
+  try {
+    r = await fetch(url, { cache: 'no-store' });
+  } catch (e: unknown) {
+    // A transport failure is not "the imagery is not baked" — on a deployment whose
+    // tiles live on a CDN it is usually CORS or the store being unreachable, and the
+    // panel has to say which. Throwing the untyped error let `classifyBootError` decide
+    // from the message, which is exactly the wording-coupling this refactor removed.
+    throw new ManifestError('http', `manifest request failed: ${String(e)}`, { url });
+  }
+  if (!r.ok) {
+    throw new ManifestError('http', `manifest.json HTTP ${r.status}`, {
+      status: r.status,
+      url,
+    });
+  }
   const m = parseManifest(await r.json());
-  if (!m) throw new Error('manifest.json is not compatible with this build');
+  if (!m) {
+    throw new ManifestError('incompatible', `${url} is not compatible with this build`, {
+      url,
+    });
+  }
   return m;
 }
 
@@ -224,14 +280,14 @@ export async function probeAssets(m: Manifest): Promise<Probe[]> {
   const paperTop = layerTop(m, 'paper');
   const paths = [
     // unbaked: does the pyramid exist at all?
-    '/tiles/photo/0/0/0.jpg',
+    tilePath('photo', 0, 0, 0),
     // wrong top level + the east seam, at the deepest *paper* row. The old code
     // applied photo's top to this paper URL and probed row 0 (north).
-    `/tiles/paper/${paperTop}/${colsAt(paperTop) - 1}/${bottomRowAt(paperTop)}.jpg`,
+    tilePath('paper', paperTop, colsAt(paperTop) - 1, bottomRowAt(paperTop)),
     // the antimeridian column, at the deepest *photo* row. The old
     // `Math.min(2**top - 1, 2**(top - 1))` always resolved to `2**(top - 1)`
     // (the equator), so the intended bottom row was dead code.
-    `/tiles/photo/${photoTop}/0/${bottomRowAt(photoTop)}.jpg`,
+    tilePath('photo', photoTop, 0, bottomRowAt(photoTop)),
   ];
   return Promise.all(
     paths.map(async (path) => {

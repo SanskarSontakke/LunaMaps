@@ -1,5 +1,6 @@
 import * as Cesium from 'cesium';
 import { MOON_ELLIPSOID, TILE_SIZE } from './moon';
+import { tilePath, tileTemplate } from '@/lib/tileSource';
 import { MAX_TOP_LEVEL, levelCols, levelRows, mPerPx } from '@/lib/grid';
 import type { Availability, TileRange } from '@/types';
 
@@ -64,8 +65,10 @@ export const ORTHO_CREDIT = new Cesium.Credit(
 
 /** Where the baked pyramid lives. `{z}/{x}/{y}` is Cesium's own substitution, and
  *  its `GeographicTilingScheme` gives the same tile grid `scripts/grid.py` does
- *  (`src/test/ortho.test.ts` compares the two instead of assuming it). */
-export const ORTHO_URL_TEMPLATE = '/tiles/ortho/{z}/{x}/{y}.jpg';
+ *  (`src/test/ortho.test.ts` compares the two instead of assuming it). The prefix is
+ *  `src/lib/tileSource.ts`'s answer: `/tiles` for a local build, the configured store
+ *  for a deployment whose imagery does not ride in the bundle. */
+export const ORTHO_URL_TEMPLATE = tileTemplate('ortho');
 
 /** The layer's name, as it appears in the manifest and on disk. */
 export const ORTHO_LAYER_NAME = 'ortho';
@@ -479,8 +482,8 @@ export function orthoProbePaths(availability: Availability, top: number): string
     if (ranges.length === 0) continue;
     const [x0, , , y0] = ranges[0];
     const [, x1, , y1] = ranges[ranges.length - 1];
-    out.push(`/tiles/ortho/${level}/${x0}/${y0}.jpg`);
-    out.push(`/tiles/ortho/${level}/${x1}/${y1}.jpg`);
+    out.push(tilePath('ortho', level, x0, y0));
+    out.push(tilePath('ortho', level, x1, y1));
   }
   // A level with one rectangle gives the same tile twice; the point is two samples
   // per level where they differ, not two fetches for one file.
@@ -500,6 +503,25 @@ export function orthoOnDisk(probes: { ok: boolean }[]): boolean {
 }
 
 /**
+ * The wording that names where the overlay's pixels came from, in one place so the
+ * control's gloss and the layer's own attribution cannot disagree about it.
+ *
+ * `source` is the manifest's `layers.ortho.source`, carried through `parseManifest`
+ * because a label that recites "Kaguya TC" from a literal stays true only until the day
+ * the record names something else — and by then the text is the only thing a user has
+ * to go on. An unknown key is named verbatim and its radiometry declared unknown rather
+ * than dressed up as this product. `undefined` is today's live case (the caller has not
+ * been wired to the record yet) and keeps the shipped wording, which is what the
+ * delivered record actually says.
+ */
+export function orthoSourcePhrase(source?: string): string {
+  if (source === undefined || source === 'kaguya-tc') {
+    return 'Kaguya TC orthophoto — shaded relief, not albedo';
+  }
+  return `ortho layer, source ${source} — radiometry not declared by this build`;
+}
+
+/**
  * The control's wording, in one exported function so requirement 6 is testable
  * prose rather than JSX nobody reads. It names the source and the radiometry:
  * `ortho` is a **shaded orthophoto**, not illumination-normalised albedo, and a
@@ -516,6 +538,7 @@ export function orthoControlCopy(
   availability: Availability | undefined,
   top?: number,
   onDisk = true,
+  sourceKey?: string,
 ): OrthoControlCopy {
   const levels = availability ? orthoLevels(availability, top) : [];
   // Emptiness is "nothing inside the envelope has a rectangle in it", which is
@@ -529,7 +552,7 @@ export function orthoControlCopy(
   const deepest = levels.length > 0 ? levels[levels.length - 1] : ORTHO_MAX_LEVEL;
   // 10.4 m/px comes from the grid, so the number cannot drift from the pyramid.
   const resolution = `${mPerPx(deepest).toFixed(1)} m/px`;
-  const source = 'Kaguya TC orthophoto — shaded relief, not albedo';
+  const source = orthoSourcePhrase(sourceKey);
   if (empty) {
     return {
       title: 'Deep zoom unavailable',

@@ -221,8 +221,9 @@ describe('parseManifest', () => {
 describe('layers.ortho.availability', () => {
   // The field is optional by construction: the delivered manifest carries no
   // ortho record at all until the streaming bake writes one, and a missing record
-  // must never brick `paper`/`photo`. A MALFORMED one is a different matter — it
-  // is refused, because a wrong range is a 404 on every frame.
+  // must never brick `paper`/`photo`. A MALFORMED one used to be refused the same way
+  // a missing base layer is — by rejecting the whole manifest — which is the finding
+  // the block below now tests the other way round.
   const withOrtho = (ortho: unknown) =>
     parseManifest({
       ...GOOD,
@@ -257,39 +258,65 @@ describe('layers.ortho.availability', () => {
     });
   });
 
-  it('rejects an availability range outside the level grid', () => {
+  // The review's "a malformed optional block bricks the whole app" finding, fixed:
+  // `null` for any of these used to be the contract, so one out-of-range rectangle in
+  // the OPTIONAL deep-zoom layer refused `paper` and `photo` too, and the panel that
+  // appeared told the user imagery had not been baked and offered a bake command that
+  // could not fix a file that was baked and merely misspelled. These cases now have to
+  // say the same three things: the base layers boot, the overlay is gone, and the
+  // reason is in `warnings` rather than silently swallowed.
+  const dropsOrtho = (ortho: unknown) => {
+    const m = withOrtho(ortho);
+    expect(m, JSON.stringify(ortho)).not.toBeNull();
+    expect(m!.layers.ortho, JSON.stringify(ortho)).toBeUndefined();
+    expect(m!.warnings?.length, JSON.stringify(ortho)).toBeGreaterThan(0);
+    expect(m!.layers.paper.top).toBeGreaterThan(0);
+    expect(m!.layers.photo.top).toBeGreaterThan(0);
+  };
+
+  it('drops a record whose availability range lies outside the level grid', () => {
     // L9 is 1024 x 512 tiles, so column 1024 does not exist.
-    expect(withOrtho({ top: 10, availability: { '9': [[0, 1024, 0, 0]] } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: { '9': [[0, 1023, 0, 512]] } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: { '9': [[-1, 10, 0, 0]] } })).toBeNull();
+    dropsOrtho({ top: 10, availability: { '9': [[0, 1024, 0, 0]] } });
+    dropsOrtho({ top: 10, availability: { '9': [[0, 1023, 0, 512]] } });
+    dropsOrtho({ top: 10, availability: { '9': [[-1, 10, 0, 0]] } });
   });
 
-  it('rejects inverted bounds, non-integer bounds and the wrong arity', () => {
-    expect(withOrtho({ top: 10, availability: { '9': [[12, 10, 5, 5]] } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: { '9': [[10, 12, 5, 4]] } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: { '9': [[1, 2, 3, 4, 5]] } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: { '9': [[1, 2.5, 3, 4]] } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: { '9': ['1023'] } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: { '9': '1023' } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: [] })).toBeNull();
+  it('drops inverted bounds, non-integer bounds and the wrong arity', () => {
+    dropsOrtho({ top: 10, availability: { '9': [[12, 10, 5, 5]] } });
+    dropsOrtho({ top: 10, availability: { '9': [[10, 12, 5, 4]] } });
+    dropsOrtho({ top: 10, availability: { '9': [[1, 2, 3, 4, 5]] } });
+    dropsOrtho({ top: 10, availability: { '9': [[1, 2.5, 3, 4]] } });
+    dropsOrtho({ top: 10, availability: { '9': ['1023'] } });
+    dropsOrtho({ top: 10, availability: { '9': '1023' } });
+    dropsOrtho({ top: 10, availability: [] });
   });
 
-  it('rejects an empty range list, which is what `validate_availability` rejects too', () => {
-    expect(withOrtho({ top: 10, availability: { '9': [] } })).toBeNull();
+  it('drops an empty range list, which is what `validate_availability` rejects too', () => {
+    dropsOrtho({ top: 10, availability: { '9': [] } });
   });
 
-  it('rejects a level above the record’s own top, and a non-canonical level key', () => {
-    expect(withOrtho({ top: 7, availability: { '8': [[0, 1, 0, 0]] } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: { '11': [[0, 1, 0, 0]] } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: { '09': [[0, 1, 0, 0]] } })).toBeNull();
-    expect(withOrtho({ top: 10, availability: { 'nine': [[0, 1, 0, 0]] } })).toBeNull();
+  it('drops a level above the record’s own top, and a non-canonical level key', () => {
+    dropsOrtho({ top: 7, availability: { '8': [[0, 1, 0, 0]] } });
+    dropsOrtho({ top: 10, availability: { '11': [[0, 1, 0, 0]] } });
+    dropsOrtho({ top: 10, availability: { '09': [[0, 1, 0, 0]] } });
+    dropsOrtho({ top: 10, availability: { 'nine': [[0, 1, 0, 0]] } });
   });
 
-  it('rejects an ortho record whose top the grid does not define', () => {
-    expect(withOrtho({ top: 11, availability: {} })).toBeNull();
-    expect(withOrtho({ top: 'ten', availability: {} })).toBeNull();
-    expect(withOrtho('ortho')).toBeNull();
-    expect(withOrtho(null)).toBeNull();
+  it('drops an ortho record whose top the grid does not define', () => {
+    dropsOrtho({ top: 11, availability: {} });
+    dropsOrtho({ top: 'ten', availability: {} });
+    dropsOrtho('ortho');
+    dropsOrtho(null);
+  });
+
+  it('still refuses the file outright when a BASE layer is wrong', () => {
+    // The degradation is scoped to the optional layer. If this assertion ever
+    // broadens, the finding it fixes comes back: `layers.ortho` must not be able to
+    // take the map down, and a broken `paper`/`photo` must not be able to stay up.
+    expect(
+      parseManifest({ ...GOOD, layers: { ...GOOD.layers, paper: { top: 99 } } }),
+    ).toBeNull();
+    expect(parseManifest({ ...GOOD, layers: { photo: GOOD.layers.photo } })).toBeNull();
   });
 
   it('keeps only the fields it validated, so no cast can assert a bake key', () => {

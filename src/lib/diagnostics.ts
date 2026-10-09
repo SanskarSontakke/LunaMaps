@@ -14,6 +14,7 @@
  * importing the network layer, which is what keeps it testable.
  */
 import type { Manifest } from '@/types';
+import { ManifestError } from '@/lib/manifestError';
 
 export type BootErrorKind = 'webgl' | 'assets' | 'cesiumBase' | 'unknown';
 
@@ -189,8 +190,24 @@ export async function runBoot(deps: BootDeps): Promise<BootState> {
   try {
     manifest = await deps.loadManifest();
   } catch (e: unknown) {
-    const kind = classifyBootError(e);
-    if (kind === 'assets' && !/not compatible/i.test(rawMessage(e))) {
+    // Typed routing, not wording routing. A 404 on the manifest IS the unbaked case
+    // and belongs on the `NoAssets` panel with the pipeline command; a manifest that
+    // exists but does not match this build is a mismatch and belongs on the error
+    // panel with its own message. The old test was
+    // `kind === 'assets' && !/not compatible/i.test(rawMessage(e))` — which coupled
+    // this file to a sentence `assets.ts` happens to emit, and `diagnostics.test.ts`
+    // re-typed that sentence rather than importing the producer, so rewording it would
+    // have routed every malformed manifest to "Imagery has not been baked yet" with an
+    // `npm run bake` that cannot fix it, all tests green.
+    if (e instanceof ManifestError) {
+      if (e.kind === 'http') {
+        return { phase: 'assets', missing: [e.url ?? 'tiles/manifest.json'] };
+      }
+      return bootFailure('manifest', e);
+    }
+    // Anything that did not come from `loadManifest` still falls back to the text
+    // classifier, because a raw `fetch` or Cesium failure arrives untyped.
+    if (classifyBootError(e) === 'assets') {
       return { phase: 'assets', missing: ['tiles/manifest.json'] };
     }
     return bootFailure('manifest', e);

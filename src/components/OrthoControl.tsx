@@ -22,6 +22,7 @@ export default function OrthoControl({
   availability,
   top,
   onDisk = true,
+  source,
   enabled,
   onToggle,
 }: {
@@ -31,10 +32,15 @@ export default function OrthoControl({
    *  the same as "no record": the manifest promises deep tiles and `public/tiles/`
    *  does not hold them, which is the normal state of a fresh clone. */
   onDisk?: boolean;
+  /** `layers.ortho.source` from the manifest, so the wording names the product the
+   *  record says it holds instead of reciting one that may have changed. Optional for
+   *  the same reason `onDisk` is: the control renders correctly from the record's
+   *  absence, and `orthoSourcePhrase` decides what that reads as. */
+  source?: string;
   enabled: boolean;
   onToggle: (next: boolean) => void;
 }) {
-  const copy = orthoControlCopy(availability, top, onDisk);
+  const copy = orthoControlCopy(availability, top, onDisk, source);
   return (
     <div
       className="ctl ctl-ortho"

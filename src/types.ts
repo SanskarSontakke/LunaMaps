@@ -55,10 +55,16 @@ export type TileRange = [number, number, number, number];
  */
 export type Availability = Record<string, TileRange[]>;
 
-/** What the app keeps of `layers.ortho`: the two fields the renderer reads. */
+/**
+ * What the app keeps of `layers.ortho`. `top` and `availability` are what the
+ * renderer reads; `source` is the product the pixels came from, kept because the
+ * control's wording has to name the source it is showing rather than recite a literal
+ * that outlived the bake (`kaguya-tc` today; see `orthoSourcePhrase`).
+ */
 export interface OrthoLayerRecord {
   top: number;
   availability: Availability;
+  source?: string;
 }
 
 /**
@@ -110,6 +116,19 @@ export interface Manifest {
     photo: { top: number };
     ortho?: OrthoLayerRecord;
   };
+  /**
+   * Something in the file was not usable and was therefore dropped. Present only
+   * when `parseManifest` actually discarded something.
+   *
+   * This exists because an optional block used to be able to refuse the whole
+   * manifest: one out-of-range rectangle in `layers.ortho` took `paper` and `photo`
+   * down with it and the panel told the user imagery had not been baked, pointing
+   * them at a command that could not fix it. A bad optional layer now degrades to
+   * "deep zoom off" and leaves the reason here, so the degradation is stated rather
+   * than silent — and a manifest that says `layers.ortho` exists while this build
+   * discarded it is a contradiction a test can catch.
+   */
+  warnings?: string[];
 }
 
 export const DEFAULT_MODE: Mode = 'globe';

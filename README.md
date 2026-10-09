@@ -25,6 +25,21 @@ A fresh clone has **no imagery**: `.gitignore` excludes `public/tiles/*` except 
 `SystemExit: no paper tiles at level 5 under public/tiles`. `public/cesium/` is ignored too, which is why the
 postinstall copier matters. The pipeline scripts are spelled `.venv\Scripts\python.exe scripts/foo.py` (backslashes, doubled because this is JSON) because npm runs package scripts through `cmd.exe`, not your Git Bash: a forward-slash venv path fails with "not recognized" before Python starts. From Git Bash itself, `.venv/Scripts/python.exe` remains correct.
 
+## Deploying
+
+Still local-first by default — unset everything and the app reads `/tiles` from its own
+origin, exactly as above. Hosting is a separate, opt-in step, and it is only ever a
+*delivery* question because of the sizes: the app is ~8 MB, the pyramids are 3.0 GB and
+95,643 files, which is why they are not committed. `NEXT_PUBLIC_TILE_BASE_URL` points the
+client at an `https://` store that mirrors the same layout
+(`<base>/manifest.json`, `<base>/<layer>/<L>/<x>/<y>.jpg`); `vercel.json` is committed; and
+[`docs/deploy.md`](docs/deploy.md) covers the store's CORS requirement (without
+`Access-Control-Allow-Origin` the map renders an empty globe, not an error panel), the sync
+commands, the UI-only deployment that ships no imagery at all, and the ~71 MB L0-L4 subset
+that needs no store. What the pipeline cannot do is verify any of that from here: no
+credentials exist in this repository, so the store-side commands are documented as the
+shape of the step rather than as a tested recipe.
+
 ## Measured pipeline cost
 
 Measured, not estimated. Windows / Git Bash, Samsung 980 PRO SSD, 15.8 GiB RAM, rasterio 1.5.2 / GDAL 3.12.2,
