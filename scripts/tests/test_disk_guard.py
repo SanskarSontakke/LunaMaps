@@ -378,20 +378,43 @@ def test_a_negative_band_rows_used_to_bake_nothing_silently():
 # 7. The manifest reflects the tree (findings 10 and 13).
 # --------------------------------------------------------------------------
 
+# Measured from the Tier B bake, not typed. `bake.py --top 7` finished
+# 2026-10-09 05:18 local; work/bake-L7.log ends "baked 36352 new tiles + 21844
+# derived parents = 58196 writes in 36975.8s". The bake was resumed once (the
+# first process was killed at 22% and restarted detached), which is why the
+# per-layer `baked` counts below are smaller than the tiles on disk.
+TIER_B_TOP = 7
+TIER_B_BYTES_MEASURED = 2_819_245_403
+TIER_B_TILES_MEASURED = 87_380          # == the --dry-run plan, exactly
+TIER_B_SECONDS_MEASURED = 36_975.8
+
+
 def test_the_shipped_manifest_matches_the_anchor_it_is_quoted_from():
-    """bake.TIER_A_BYTES_MEASURED is the number the refusal message prints, so
-    it is checked against the artifact it was measured from -- and the shipped
-    manifest must no longer claim a level that was never baked."""
+    """The shipped manifest is checked against the numbers the bake logged, and
+    against the level it has now actually reached.
+
+    Task 17 finding 10 was the mirror image of the `7 in levels` assertion below:
+    the Tier A manifest advertised an L7 that had never been baked. The guard is
+    not "never claim L7", it is "claim exactly what is on disk".
+    """
     raw = SHIPPED_MANIFEST.read_bytes()
     m = json.loads(raw.decode('utf-8'))
-    assert sum(m['layers'][l]['bytes'] for l in LAYERS) == bake.TIER_A_BYTES_MEASURED
-    assert sum(m['layers'][l]['tiles'] for l in LAYERS) == 21_844
-    assert [lv['L'] for lv in m['levels']] == list(range(bake.TIER_A_TOP + 1))
-    assert 7 not in [lv['L'] for lv in m['levels']]
+    assert sum(m['layers'][l]['bytes'] for l in LAYERS) == TIER_B_BYTES_MEASURED
+    assert sum(m['layers'][l]['tiles'] for l in LAYERS) == TIER_B_TILES_MEASURED
+    assert [lv['L'] for lv in m['levels']] == list(range(TIER_B_TOP + 1))
+    assert 7 in [lv['L'] for lv in m['levels']]
     assert raw.endswith(b'\n'), 'finding 13: tracked text ends with a newline'
-    assert m['reindex']['carriedForward'], 'the re-index must declare what it carried'
-    assert m['generatedAt'] == m['reindex']['bakedAt'] if 'bakedAt' in m.get(
-        'reindex', {}) else True
+    assert m['timings']['bakeSeconds'] == pytest.approx(TIER_B_SECONDS_MEASURED)
+    for layer in LAYERS:
+        rec = m['layers'][layer]
+        assert rec['top'] == TIER_B_TOP
+        # A resumed bake counts only its own writes: paper says baked=3584 because
+        # the killed run had already written 29,184 of its L7 tiles. `tiles` is the
+        # filesystem truth, so the honest invariant is a non-negative carried
+        # shortfall -- never that `baked + derived` equals the total.
+        carried = rec['tiles'] - rec['baked'] - rec['derived']
+        assert carried >= 0, f'{layer}: counters exceed the tiles on disk'
+    assert 'reindex' not in m,         'a fresh bake writes its own counts; only --reindex adds that record'
 
 
 def test_the_manifest_prj_wkt_is_the_contract_string(tmp_path):
@@ -616,7 +639,8 @@ def test_the_shipped_manifest_is_lf_only_with_a_trailing_newline():
 # feeds layers.<layer>.top straight into Cesium.maximumLevel. We may not run
 # vitest here, so the shipped manifest is re-read against the SAME predicates
 # rather than trusted from the writer -- finding 10's "regenerate ... so the app
-# keeps accepting it", proved not asserted. Mirrors assets.ts lines 6-93.
+# keeps accepting it", proved not asserted. Mirrors `parseManifest()` and
+# `parseAvailability()` in src/lib/assets.ts by name, not by line number.
 APP_TILE_SIZE = 512
 APP_MOON_RADIUS_M = 1_737_400
 APP_MAX_TOP = 10
@@ -634,6 +658,65 @@ def _app_is_text(v):
 def _app_is_baked_top(v):
     return (isinstance(v, int) and not isinstance(v, bool)
             and 0 <= v <= APP_MAX_TOP)
+
+
+def _app_is_int(v):
+    """`assets.ts`'s `isInt`: a real number whose value is an integer. Booleans
+    are excluded because JSON `true` is not a tile index, whatever Python's
+    `int` subclass says about it."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) \
+        and float(v).is_integer()
+
+
+# `assets.ts`'s `parseAvailability` distinguishes "the key is absent" (`value ===
+# undefined` -> `{}`, a layer with no recorded availability) from "the key is
+# present and null" (`!isRecord(value)` -> refuse the whole manifest). Python's
+# `None` is BOTH of those to a plain `.get()`, so the transcription needs its own
+# "absent" that cannot be a JSON value: without it this copy accepts
+# `{"availability": null}`, CI goes green, and the app bricks at boot.
+_MISSING = object()
+
+
+def _app_parse_availability(value, top):
+    """Python transcription of `parseAvailability()` in src/lib/assets.ts.
+
+    Returns the reduced block, `{}` for "no block recorded" -- and only for
+    `_MISSING`, never for a `None` that came out of the JSON -- or None for "refuse
+    the whole manifest". The refusals mirror `manifest.validate_availability`
+    one for one, which `test_the_transcription_and_the_writer_gate_never_disagree`
+    checks against the authoritative function instead of trusting this copy."""
+    if value is _MISSING:
+        return {}
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for key, ranges in value.items():
+        if not isinstance(key, str):
+            return None
+        try:
+            level = int(key)
+        except (TypeError, ValueError):
+            return None
+        if str(level) != key:
+            return None
+        if level < 0 or level > min(top, APP_MAX_TOP):
+            return None
+        if not isinstance(ranges, list) or len(ranges) == 0:
+            return None
+        cols, rows = grid.level_cols(level), grid.level_rows(level)
+        checked = []
+        for r in ranges:
+            if not isinstance(r, list) or len(r) != 4 \
+                    or not all(_app_is_int(v) for v in r):
+                return None
+            x0, x1, y0, y1 = (int(v) for v in r)
+            if x0 > x1 or y0 > y1:
+                return None
+            if x0 < 0 or x1 > cols - 1 or y0 < 0 or y1 > rows - 1:
+                return None
+            checked.append([x0, x1, y0, y1])
+        out[key] = checked
+    return out
 
 
 def parse_manifest_app(value):
@@ -687,9 +770,28 @@ def parse_manifest_app(value):
         return None
     if not (isinstance(photo, dict) and _app_is_baked_top(photo.get('top'))):
         return None
-    return {'schema': 1, 'generatedAt': value['generatedAt'],
-            'layers': {'paper': {'top': paper['top']},
-                       'photo': {'top': photo['top']}}}
+    result = {'schema': 1, 'generatedAt': value['generatedAt'],
+              'layers': {'paper': {'top': paper['top']},
+                         'photo': {'top': photo['top']}}}
+    # `ortho` is optional in exactly the way assets.ts makes it optional: absent
+    # is legal (nothing has been baked yet), present-but-broken refuses the file.
+    # `in layers` rather than `.get()`, because a JSON `null` is *present* and the
+    # TS side rejects it; `is not None` would have let this copy accept a manifest
+    # the app refuses, which is the drift this whole section exists to prevent.
+    # `availability` gets the same treatment one level down, via `_MISSING`: the
+    # only thing `parseAvailability` reads as "no block" is an absent key, so a
+    # `null` there is a malformed block and refuses the file.
+    if 'ortho' in layers:
+        ortho = layers['ortho']
+        if not isinstance(ortho, dict) or not _app_is_baked_top(ortho.get('top')):
+            return None
+        availability = _app_parse_availability(ortho.get('availability', _MISSING),
+                                               ortho['top'])
+        if availability is None:
+            return None
+        result['layers']['ortho'] = {'top': ortho['top'],
+                                     'availability': availability}
+    return result
 
 
 def test_the_shipped_manifest_satisfies_every_field_the_app_validates():
@@ -697,8 +799,8 @@ def test_the_shipped_manifest_satisfies_every_field_the_app_validates():
     parsed = parse_manifest_app(m)
     assert parsed is not None, 'parseManifest would reject the shipped manifest'
     # src/test/assets.test.ts pins these exact values against this file.
-    assert parsed['layers']['paper']['top'] == 6
-    assert parsed['layers']['photo']['top'] == 6
+    assert parsed['layers']['paper']['top'] == TIER_B_TOP
+    assert parsed['layers']['photo']['top'] == TIER_B_TOP
     assert m['grid']['radiusMeters'] == APP_MOON_RADIUS_M
     assert m['grid']['tileSize'] == APP_TILE_SIZE
     assert m['grid']['yOrigin'] == 'north'
@@ -725,3 +827,185 @@ def test_parse_manifest_refuses_a_top_past_the_cap_or_a_moved_grid():
     empty_sources = json.loads(json.dumps(good))
     empty_sources['sources'] = []
     assert parse_manifest_app(empty_sources) is None
+
+
+# --------------------------------------------------------------------------
+# 9. layers.ortho.availability (Task 3). `assets.ts` is the app's only gate on
+#    the manifest, so a field it parses has to be parsed HERE too -- and the copy
+#    has to answer the same way the writer's own gate does.
+# --------------------------------------------------------------------------
+
+ORTHO_GOOD = {'9': [[10, 12, 5, 5]]}
+_NO_ORTHO = object()
+
+
+def manifest_with_ortho(ortho):
+    """The shipped manifest with `layers.ortho` set to `ortho`, or removed for the
+    `_NO_ORTHO` sentinel. Read from the real file so this fixture cannot drift
+    from the artifact the app actually loads."""
+    m = json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8'))
+    if ortho is _NO_ORTHO:
+        m['layers'].pop('ortho', None)
+    else:
+        m['layers']['ortho'] = ortho
+    return m
+
+
+def test_the_shipped_manifest_needs_no_ortho_record_at_all():
+    """`ortho` is optional by construction: the delivered manifest carries no
+    ortho record until the streaming bake writes one, and `paper`/`photo` must
+    keep booting either way. The assertion is on the real file, so the day Task 4
+    writes one this test says so instead of passing silently on a stale shape."""
+    m = json.loads(SHIPPED_MANIFEST.read_text(encoding='utf-8'))
+    assert 'ortho' not in m['layers'], \
+        'the shipped manifest gained an ortho record: re-check the top levels here'
+    parsed = parse_manifest_app(m)
+    assert parsed is not None, 'parseManifest would refuse the shipped manifest'
+    assert 'ortho' not in parsed['layers']
+    assert parsed['layers'] == {'paper': {'top': 7}, 'photo': {'top': 7}}
+
+
+def test_a_well_formed_ortho_record_is_carried_through():
+    parsed = parse_manifest_app(
+        manifest_with_ortho({'top': 10, 'availability': ORTHO_GOOD}))
+    assert parsed is not None
+    assert parsed['layers']['ortho'] == {'top': 10, 'availability': ORTHO_GOOD}
+    # The base layers are untouched by the new field -- a one-record change that
+    # broke `paper`/`photo` is the failure mode the L7 bake's manifest rewrite
+    # would have hit.
+    assert parsed['layers']['paper'] == {'top': 7}
+    assert parsed['layers']['photo'] == {'top': 7}
+
+
+def test_a_missing_or_empty_availability_means_unavailable_not_global():
+    """Requirement 5: no block, or an empty one, means "nothing to overlay". It
+    is NOT a refusal, and it is never read as "the whole globe" -- which for a
+    region-limited pyramid is a 404 on every frame."""
+    for ortho in ({'top': 10}, {'top': 10, 'availability': {}}):
+        parsed = parse_manifest_app(manifest_with_ortho(ortho))
+        assert parsed is not None, ortho
+        assert parsed['layers']['ortho'] == {'top': 10, 'availability': {}}
+
+
+# Each of these is the same refusal `assets.ts` makes, and the same one
+# `manifest.validate_availability` made before this task existed.
+BAD_AVAILABILITY = [
+    ({'9': [[0, 1024, 0, 0]]}, 'L9 has 1024 columns, so column 1024 is not a tile'),
+    ({'9': [[0, 1023, 0, 512]]}, 'L9 has 512 rows, so row 512 is not a tile'),
+    ({'9': [[-1, 10, 0, 0]]}, 'a negative column'),
+    ({'9': [[0, 1, -1, 0]]}, 'a negative row'),
+    ({'9': [[12, 10, 5, 5]]}, 'inverted x bounds'),
+    ({'9': [[10, 12, 5, 4]]}, 'inverted y bounds (row 0 is north)'),
+    ({'9': [[1, 2, 3, 4, 5]]}, 'a range with the wrong arity'),
+    ({'9': [[1, 2.5, 3, 4]]}, 'a non-integer tile index'),
+    ({'9': ['1023']}, 'a range of strings'),
+    ({'9': '1023'}, 'a range list that is not a list'),
+    ({'9': []}, 'a level with an empty list of ranges'),
+    ({'09': [[0, 1, 0, 0]]}, 'a level key that is not its own canonical int'),
+    ({'nine': [[0, 1, 0, 0]]}, 'a level key that is not a number'),
+    ({'11': [[0, 1, 0, 0]]}, 'a level above MAX_TOP_LEVEL'),
+    ([['0', '1', '0', '0']], 'an availability block that is a list'),
+    ('availability', 'an availability block that is a string'),
+]
+
+
+@pytest.mark.parametrize('availability, why', BAD_AVAILABILITY,
+                         ids=[b[1] for b in BAD_AVAILABILITY])
+def test_a_malformed_availability_refuses_the_whole_manifest(availability, why):
+    """Refuse the file rather than half-read it: a range outside the grid becomes
+    a request for a file no bake wrote, and a silently-dropped block would look
+    exactly like "deep zoom was never baked" on a tree where it was."""
+    parsed = parse_manifest_app(
+        manifest_with_ortho({'top': 10, 'availability': availability}))
+    assert parsed is None, f'the transcription accepted a bad block: {why}'
+
+
+def test_a_level_above_the_layers_own_top_is_refused():
+    """`top` is the ceiling the manifest states; availability naming L8 under
+    `top: 7` is a promise the bake could not have kept."""
+    assert parse_manifest_app(manifest_with_ortho(
+        {'top': 7, 'availability': {'8': [[0, 1, 0, 0]]}})) is None
+    assert parse_manifest_app(manifest_with_ortho(
+        {'top': 8, 'availability': {'8': [[0, 511, 0, 255]]}})) is not None
+
+
+def test_an_ortho_record_with_a_top_the_grid_does_not_define_is_refused():
+    for bad in ({'top': 11, 'availability': {}},
+                {'top': 'ten', 'availability': {}},
+                {'top': 6.5, 'availability': {}},
+                {'availability': ORTHO_GOOD}):
+        assert parse_manifest_app(manifest_with_ortho(bad)) is None, bad
+    for not_a_record in ('ortho', [], 7):
+        assert parse_manifest_app(manifest_with_ortho(not_a_record)) is None, \
+            not_a_record
+
+
+def test_a_null_ortho_record_is_present_and_broken_not_absent():
+    """Why the transcription asks `'ortho' in layers` rather than `is not None`:
+    JSON `null` is a PRESENT record of the wrong type, and `assets.ts` refuses
+    it. A copy that read it as absent would accept a manifest the app rejects,
+    and the drift would be invisible from both sides."""
+    assert parse_manifest_app(manifest_with_ortho(None)) is None
+    # The same line, one field down. `parseAvailability` treats ONLY `undefined`
+    # as "no block recorded"; a JSON `null` reaches `!isRecord(value)` and refuses
+    # the whole manifest. So the transcription may not read `None` as absent here
+    # either -- and it cannot tell the two apart unless the caller's `.get()` hands
+    # it something that is not `None` for "absent".
+    assert parse_manifest_app(
+        manifest_with_ortho({'top': 10, 'availability': None})) is None
+
+
+def test_the_transcription_and_the_writer_gate_never_disagree():
+    """The real check on a hand-made copy: `manifest.validate_availability` is
+    authoritative, so for every block the writer could emit -- including the plan
+    `public/data/regions.json` already carries -- the transcription and the gate
+    must answer the same way."""
+    plan = json.loads(
+        (REPO / 'public' / 'data' / 'regions.json').read_text(encoding='utf-8')
+    )['availability']
+    # `None` is JSON `null`, which is PRESENT and malformed to `assets.ts`
+    # (`value === undefined` means absent; a null falls to `!isRecord(value)` and
+    # refuses the file) and refused by `validate_availability` for the same reason
+    # it refuses any non-dict. The transcription has to land on the same side of
+    # that line, which it can only do if "absent" is a value `None` cannot be --
+    # see `_MISSING` and `parse_manifest_app`.
+    blocks = [ORTHO_GOOD, {}, None, plan,
+              {'8': [[0, 511, 0, 255]], '9': [[0, 0, 0, 0]]},
+              *[a for a, _ in BAD_AVAILABILITY]]
+    for top in (1, 7, 8, 10):
+        for block in blocks:
+            want_ok = manifest.validate_availability(block, top) == []
+            got_ok = _app_parse_availability(block, top) is not None
+            assert got_ok == want_ok, (top, block,
+                                       manifest.validate_availability(block, top))
+
+
+def test_the_regions_plan_survives_the_apps_gate():
+    """`scripts/regions.py` writes the plan the bake will serve and the manifest
+    will publish. If that block did not satisfy the app's parser, the streaming
+    run would produce a manifest the app refuses -- so the plan is checked here,
+    against both gates, rather than discovered in a browser."""
+    from manifest import validate_availability
+    plan = json.loads(
+        (REPO / 'public' / 'data' / 'regions.json').read_text(encoding='utf-8')
+    )['availability']
+    assert validate_availability(plan, grid.MAX_TOP_LEVEL) == []
+    parsed = parse_manifest_app(manifest_with_ortho(
+        {'top': grid.MAX_TOP_LEVEL, 'availability': plan}))
+    assert parsed is not None, 'assets.ts would refuse the availability regions.py plans'
+    assert sorted(int(k) for k in parsed['layers']['ortho']['availability']) == [8, 9, 10]
+
+
+def test_the_transcription_is_more_permissive_than_the_writer_on_two_point_zero():
+    """Named rather than hidden: JSON `2.0` IS an integer to JavaScript
+    (`Number.isInteger(2.0)`) and is NOT one to `validate_availability`
+    (`isinstance(2.0, int)` is False). The transcription mirrors the app, so it
+    agrees with the app on that value and with the writer's gate nowhere else.
+    Nothing can produce it -- `regions.py` and `availability_from_disk` emit
+    Python ints -- so the asymmetry has no consequence today, but a future change
+    to either gate should know which side of it it is moving."""
+    block = {'9': [[1, 2.0, 3, 4]]}
+    assert manifest.validate_availability(block, 10) != []
+    assert _app_parse_availability(block, 10) is not None
+    assert parse_manifest_app(
+        manifest_with_ortho({'top': 10, 'availability': block})) is not None
