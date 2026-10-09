@@ -42,6 +42,13 @@ sites are cheap (22–29 tiles each at 0.5°); Orientale is 4,430; the cap is wh
 6° band of every longitude costs. If that is too much, the knob is the cap's
 latitude edge, not the site boxes.
 
+*Amended 2026-10-09, after both polar sources were measured: the knob was used and the
+cap is gone.* Amendment §7 has the coverage sweep, the grid's 20.8 m/px latitude ceiling
+at L9 and the spoke-to-bbox read amplification. The plan is now **12 regions and 7,132
+tiles** (7,106 distinct — apollo-15's box lies inside rima-hadley's and shares 26 tiles),
+and every one of them is baked: `test_disk_guard.py` asserts plan == delivery, so the
+dead-weight cost estimate this paragraph carried for a day cannot come back silently.
+
 **Streaming, not downloading.** `scripts/stream_bake.py` opens the COG through
 `/vsicurl/` and reads each box **once at native resolution in row chunks**, then slices
 tiles in memory. That is ~10 large sequential reads (~210 MB each) instead of ~62,000

@@ -592,10 +592,10 @@ def _region_provenance(out_dir, layer, regions_file):
 
     A region counts as published only when at least one of its planned tiles is on
     disk, so the record names what the tree shows rather than what the plan hoped
-    for -- which is why the refused `nac-spole` polar cap never appears: none of
-    its tiles were written. If the regions file is absent there is nothing to
-    cross-reference and provenance is empty; the availability itself does not
-    depend on it.
+    for. That is the rule that kept the unbaked south polar cap out of the record
+    before it left the plan altogether (scripts/regions.py, amendment 2 §7). If the
+    regions file is absent there is nothing to cross-reference and provenance is
+    empty; the availability itself does not depend on it.
     """
     idx = _disk_tile_index(out_dir, layer)
     path = Path(regions_file)
@@ -758,8 +758,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument('--only', metavar='REGION-ID',
                     help='bake one region id only.\n'
                          'This exists so the first real run can be the 22-tile\n'
-                         'apollo-11 site box rather than the 23,040-tile south\n'
-                         'polar cap: --only apollo-11')
+                         'apollo-11 site box rather than the whole 7,132-tile plan:\n'
+                         '--only apollo-11')
     ap.add_argument('--quality', type=int, default=DEFAULT_QUALITY,
                     help='JPEG quality handed to bake.save_tile')
     ap.add_argument('--chunk-rows', dest='chunk_source_rows', type=int,

@@ -51,12 +51,39 @@ SOURCES = {
         'url': ('https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/'
                 'Lunar_safed/LMAP/SouthPolar/LRO_LROC_NAC_SPOLE-90_Mosaic_1m_'
                 'controlled_cog.tif'),
+        # Measured 2026-10-09 by /vsicurl header read: 364,214 px square at a 1 m
+        # pixel, polar stereographic on latitude of origin -90, so it reaches from the
+        # pole to exactly -84.0 -- and no further, which is the only reason the plan
+        # ever drew the cap there. `pxPerDeg` is the figure that probe put on the
+        # file's own grid; it is not this pyramid's sampling, which is why the
+        # projection refusal below has to fire before any resolution comparison.
         'pxPerDeg': 1011.71,
         'projection': 'polar-stereographic',   # must be resampled into this grid
         'shaded': True,
         'bytes': 77_174_580_438,
     },
 }
+
+# No shipped region cites `nac-spole`, and it stays in the table for one reason: the
+# refusal it exists to prove. Two sources were measured against the south polar cap
+# (docs/superpowers/specs/2026-10-08-amendment-2-resolution-and-browsing.md §7):
+#
+#   * `kaguya-tc` declares +-90 and is empty there. Over a 16-longitude sweep at a
+#     64 px box, the fraction with data falls from 15/16 at -82 to 12/16 at -85,
+#     10/16 at -87 and 6/16 at -89; `nodata` is 0, so those holes would bake as
+#     black terrain, which is the lie this project already refuses in a COG read.
+#   * `nac-spole` covers the cap completely, but a geographic grid cannot express it:
+#     an L9 tile samples 20.8 m per pixel in latitude and L10 10.4 m, so 1 m/px
+#     arrives downsampled 20:1 in latitude while the innermost rows want more than
+#     1 m/px in longitude and would be upsampled. The 1 m/px pole is unreachable in
+#     this tiling scheme at any level, and the source is a second shaded illumination
+#     within one pyramid, which the mixing ban forbids.
+#
+# The cap was therefore dropped from the plan on 2026-10-09 rather than baked from
+# either source. A real sub-20 m/px south pole is a polar-stereographic *view*, which
+# is an architecture question, not a bake. The row stays because
+# `test_a_polar_stereographic_source_is_refused_by_name` needs a real projection to
+# refuse.
 
 NOTES = {
     'apollo-16': ('Gazetteer centre is lon +15.48; NASA landing tables give the '
@@ -90,8 +117,6 @@ _FEATURES = [
 ]
 
 SITE_SIZE_DEG = 0.5
-POLAR_CAP_MIN_LEVEL = 8
-POLAR_CAP_MAX_LEVEL = 9
 
 
 def slug(name: str) -> str:
@@ -241,21 +266,12 @@ def _pad(box, min_size_deg):
     return [w, max(s, -90.0), e, min(n, 90.0)]
 
 
-def polar_cap(cap: str, lat_edge: float, min_level: int, max_level: int,
-              source: str):
-    """A whole-latitude band: every longitude, from the pole to `lat_edge`."""
-    south, north = (lat_edge, -90.0) if cap == 'south' else (90.0, lat_edge)
-    return {
-        'id': f'{cap}-polar-cap', 'name': f'{cap.title()} pole',
-        'kind': 'polar-cap', 'box': [-180.0, min(south, north),
-                                     180.0, max(south, north)],
-        'minLevel': min_level, 'maxLevel': max_level, 'source': source,
-        'derivedFrom': 'declared',
-    }
-
-
 def curated(records):
-    """The shipped region set: landing sites, named features, the south polar cap."""
+    """The shipped region set: the landing sites and the named features.
+
+    Nothing else is in it, and the south polar cap is the case that proved the rule:
+    a region belongs here only when a source that was measured on the network can pay
+    for it honestly (the `nac-spole` note above)."""
     kept = labels.curate(records)
     by_mission = {}
     for r in kept:
@@ -279,8 +295,6 @@ def curated(records):
         want = next(sz for _, n, sz in _FEATURES if n == reg['name'])
         reg['box'] = _pad(reg['box'], want)
     out.extend(feats)
-    out.append(polar_cap('south', -84.0, POLAR_CAP_MIN_LEVEL,
-                         POLAR_CAP_MAX_LEVEL, 'nac-spole'))
     for reg in out:
         if reg['id'] in NOTES:
             reg['note'] = NOTES[reg['id']]

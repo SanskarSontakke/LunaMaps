@@ -217,21 +217,6 @@
    "source": "kaguya-tc",
    "derivedFrom": "centre+size",
    "diameterKm": 294.15512
-  },
-  {
-   "id": "south-polar-cap",
-   "name": "South pole",
-   "kind": "polar-cap",
-   "box": [
-    -180.0,
-    -90.0,
-    180.0,
-    -84.0
-   ],
-   "minLevel": 8,
-   "maxLevel": 9,
-   "source": "nac-spole",
-   "derivedFrom": "declared"
   }
  ],
  "availability": {
@@ -307,12 +292,6 @@
     242,
     187,
     191
-   ],
-   [
-    0,
-    511,
-    247,
-    255
    ]
   ],
   "9": [
@@ -387,12 +366,6 @@
     485,
     375,
     383
-   ],
-   [
-    0,
-    1023,
-    494,
-    511
    ]
   ],
   "10": [
@@ -471,7 +444,7 @@
   ]
  },
  "cost": {
-  "tiles": 30172,
+  "tiles": 7132,
   "perRegion": {
    "apollo-11": 22,
    "apollo-12": 29,
@@ -484,12 +457,11 @@
    "aristarchus": 337,
    "rima-hadley": 439,
    "mons-rumker": 750,
-   "mare-orientale": 4430,
-   "south-polar-cap": 23040
+   "mare-orientale": 4430
   },
   "tilesPerLevel": {
-   "8": 5002,
-   "9": 19842,
+   "8": 394,
+   "9": 1410,
    "10": 5328
   },
   "note": "availability is the PLAN. What the app may request is derived from the tiles actually on disk, the same way manifest.baked_levels asks the filesystem."

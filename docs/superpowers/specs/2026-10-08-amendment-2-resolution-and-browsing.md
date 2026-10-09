@@ -184,3 +184,72 @@ Two consequences to respect, both measured:
 2. The polar COGs are internally **deflate**-compressed, not JPEG, so a browser-side
    geotiff.js prototype needs an inflate path, and all three are in polar projections, so
    feeding the equirectangular bake means resampling them, not just windowing.
+
+## 7. The south polar cap was measured, and dropped — 2026-10-09
+
+§6 left one region unbaked: `south-polar-cap`, box -180/180 × -90/-84, planned at L8-L9
+(23,040 of the plan's 30,172 tiles). It was not baked because `check_plan` refuses the
+`nac-spole` source by projection. The question this section answers is whether it *should*
+be baked, and the answer is no, on three measurements.
+
+**7.1 The obvious source has no data there.** Kaguya TC is equirectangular, already
+registered, already streaming, and its header declares latitude bounds of exactly +-90.
+Probing it through `/vsicurl` on 2026-10-09 says otherwise: `nodata` is 0, and a 16-point
+longitude sweep of 64 px boxes reports the fraction of longitudes that actually have data —
+
+| latitude | longitudes with data (of 16) |
+|---|---|
+| -82 | 15 |
+| -85 | 12 |
+| -87 | 10 |
+| -89 | 6 |
+
+and 512 px samples centred at -84, -88 and -89.6 read back 99.8-100 % below 3 DN (mean
+0.01, max 12). Baking the cap from Kaguya would put black rectangles into the pyramid and
+advertise them as terrain. That is the same failure the plan refuses in a COG *window*
+(`stream_bake.py`: rasterio's cropped-window lie), only with the holes baked in.
+
+**7.2 The grid cannot express what the other source has.** `nac-spole` genuinely covers
+the cap: 364,214 px square at 1 m, polar stereographic on latitude of origin -90, radius
+182,107 m, which is exactly to -84.0. But a geographic tiling scheme samples *latitude* on
+a fixed grid, so one tile row at
+
+| level | latitude sampling | longitude sampling at -89.6 |
+|---|---|---|
+| L8 | 41.6 m/px | 0.0073 m/px wanted |
+| L9 | 20.8 m/px | 0.0037 m/px wanted |
+| L10 | 10.4 m/px | 0.0018 m/px wanted |
+
+(30,310.6 m per degree of latitude, and a tile spans 180/2^L degrees over 512 px; the
+longitude figure is that multiplied by cos(latitude) at the tile's poleward edge). So 1 m/px
+arrives downsampled 20:1 in latitude while the innermost rows ask for sub-centimetre
+longitude sampling that no sensor provides. **The 1 m/px pole §6 hoped for is unreachable
+in this tiling scheme at any level the grid has.**
+
+**7.3 The cost is not the 9 minutes the site boxes took.** Measured on the delivered run:
+7,106 tiles, 187,755,158 bytes, 9 minutes, i.e. ~13 tiles/s and ~26.4 KB per tile. The cap
+needs a *different* read pattern, because a polar-stereographic source and an
+equirectangular grid are rotated relative to one another: an L9 tile at -89° is a radial
+spoke 10,659 m long and ~19 m wide, and the axis-aligned window that contains it is about
+10.7 km square — roughly 180× the spoke's own area, averaged over the 1,024 longitudes. One
+pass over the cap at 1 m/px is 1.04e11 px (~104 GB); per-tile windows multiply that by the
+spoke-to-bbox ratio, which is why the naive version is not an afternoon. Doing it properly
+means reading annulus strips once and scattering into tiles — a new code path, not a flag.
+
+**7.4 And it would break the mixing ban.** `nac-spole` is a second shaded mosaic with its
+own illumination, its own season and its own scale. Inside `ortho` it draws a seam at -84°
+and makes the control's "Kaguya TC" label false; §2 item 4 applies exactly as it did to
+GLD100. Honest versions are a separate layer with its own toggle, or no cap.
+
+**Decision (the user's, 2026-10-09): drop it from the plan.** `south-polar-cap` is gone
+from `regions.py` and `public/data/regions.json`; the plan is now the 12 Kaguya regions and
+7,132 tiles (7,106 distinct — apollo-15's site box lies inside rima-hadley's and shares 26
+tiles with it). What that buys is checkable rather than aspirational: `test_disk_guard.py`
+now asserts plan == delivery (`planned == set(ortho['regions'])`) and that every shipped
+region cites `kaguya-tc`, so a region that is planned-but-never-baked fails the suite
+instead of quietly shrinking the record.
+
+A real deep south pole is a **polar-stereographic view** — its own projection, its own
+tiling, or a locally-cut image — which is an architecture question and not a bake. It stays
+out of scope for this amendment. `nac-spole` remains in `regions.SOURCES` as the measured
+row it is, because the projection refusal needs a real polar projection to refuse.
