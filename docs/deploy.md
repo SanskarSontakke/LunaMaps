@@ -12,20 +12,30 @@ is **a command you run**, and what **cannot be verified without your credentials
 
 | | files | bytes |
 |---|---|---|
-| tracked today (`git ls-files`) | 119 | largest is `tests/fixtures/moon_nomenclature_fixture.zip` at 23,845,070 B |
-| `.git` | — | 3.4 MB |
-| `public/cesium` (gitignored, created by `npm install`) | — | 7.6 MB |
-| `public/data` (tracked: features, regions) | 2 | 716 KB |
+| tracked today (`git ls-files`) | 129 | 26,291,646 |
+| — of which `tests/fixtures/moon_nomenclature_fixture.zip` | 1 | 23,845,070 |
+| — the same, without that fixture | 128 | 2,446,576 |
+| `.git` (object database) | — | 3,078,729 |
+| `public/cesium` (gitignored, created by `npm install`) | — | 7,044,626 |
+| `public/data` (tracked: features, regions) | 2 | 738,584 |
 | `public/tiles` — base pyramid L0-L7, both layers | 87,380 | 2,819,245,403 |
 | `public/tiles` — `ortho` L8-L10, 12 regions | 7,106 | 187,755,158 |
 
-The pyramids are gitignored by design (`.gitignore:44-47` keeps only
-`public/tiles/manifest.json`). That is the whole deployment problem in one line: **the app
-is 8 MB and the imagery is 3.0 GB**, so the imagery has to arrive some other way.
+Re-measured 2026-10-09. The pyramids are gitignored by design (`.gitignore:50-51` keeps
+only `public/tiles/manifest.json`). That is the whole deployment problem in one line:
+**the repository without its one fixture is 2.4 MB and the imagery is 3.0 GB**, so the
+imagery has to arrive some other way.
 
-Vercel's own ceilings are not the issue — the largest single file in the tree is about
-100 KB against a 100 MB per-file limit. The issue is repository and history size: a
-re-bake replaces 95,000 files, and git keeps every one of them forever.
+Per-file ceilings are not the issue, and the honest reason is the fixture: the largest
+committed file is `tests/fixtures/moon_nomenclature_fixture.zip` at 23,845,070 B, which
+clears Vercel's and GitHub's 100 MB per-file hard limit and GitHub's 50 MB advisory with
+room to spare. It is committed on purpose — it is the input `scripts/labels.py` reads to
+produce `public/data/features.json`, and keeping it means the label set is reproducible
+with no network. In git it costs 1,133,823 B packed, not 23.8 MB: the gazetteer's DBF
+payload is text and zlib takes it down ~21×, so `git clone` transfers ~3 MB, not 27.
+
+The issue is history, not limits: a re-bake replaces 95,000 files, and git keeps every
+one of them forever.
 
 ## 2. Two deployments that work today
 
@@ -68,7 +78,7 @@ NEXT_PUBLIC_TILE_BASE_URL=https://<your-store-prefix>/tiles
 and immutable cache headers on `/tiles/*` for the case where tiles *are* served by the app
 itself (deployment A plus a small committed subset).
 
-## 3. Three things that will actually go wrong
+## 3. Four things that will actually go wrong
 
 1. **No `Access-Control-Allow-Origin` on the store.** Cesium loads imagery as images into
    WebGL textures. `Resource` marks a cross-origin tile request `crossOrigin` itself
@@ -76,14 +86,23 @@ itself (deployment A plus a small committed subset).
    the browser refuses the image — and the failure is **an empty globe, not an error
    panel**: `probeAssets` fetches the same URL, also fails, and the panel blames the bake.
    Verify with `curl -I` for an `Access-Control-Allow-Origin` line before blaming the app.
-2. **A `manifest.json` that describes tiles the store never got.** The app now samples two
+2. **The manifest needs the same header, and its absence looks different.**
+   `manifestUrl()` is `${TILES_BASE}/manifest.json` (`src/lib/tileSource.ts:69`), so when
+   the base points at a store the manifest comes from the store too — it is a plain
+   `fetch` from a different origin, and a store that sends CORS on the JPEGs but not on
+   the JSON fails before any imagery is asked for. The two failures are distinguishable,
+   which is why both are listed: **no manifest → the "Imagery has not been baked yet"
+   panel; manifest present, tiles refused → an empty globe.** The `aws` commands above
+   `cp` the manifest separately precisely because it must be there, and the pyramid
+   subset in §5 is useless without it.
+3. **A `manifest.json` that describes tiles the store never got.** The app now samples two
    deep-zoom tiles per served level before it will attach the overlay (`orthoProbePaths` in
    `src/lib/cesium/ortho.ts`), and a miss turns the control off with "not on this
    machine". That is deliberate: it is the failure mode of a
    tracked manifest next to gitignored imagery, which is the state a fresh clone is in.
    It is a *presence* check, not an index: a half-synced store can still pass it, so sync
    the whole prefix or none of it.
-3. **`http://` in the base.** Rejected at load, falls back to `/tiles`, and says so on the
+4. **`http://` in the base.** Rejected at load, falls back to `/tiles`, and says so on the
    console. A store that only answers plain HTTP will look like the app ignored the
    setting. It did not; mixed content did.
 
