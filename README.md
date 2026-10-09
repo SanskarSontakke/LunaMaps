@@ -11,8 +11,12 @@ zoom. Every number below is copied from the plan and spec in `docs/superpowers/{
 npm install                                              # also runs scripts/postinstall_cesium.mjs
 python -m venv .venv && .venv/Scripts/python.exe -m pip install -r scripts/requirements.txt
 npm run fetch    # 3.04 GB of sources into gitignored data/raw, sha256-verified
-npm run bake     # Tier A pyramid, 2 h 58 m measured, into gitignored public/tiles
+npm run bake     # the base pyramid into gitignored public/tiles: --top 6 is 2 h 58 m
+                 # measured, and the shipped artifact is --top 7 at 10 h 16 m
 npm run labels   # regenerates public/data/features.json
+npm run bake:deep     # optional: streams the L8-L10 ortho boxes out of the Kaguya COG
+                      # (9 min, 7,106 tiles, ~195 MB, no download of the 78 GB source)
+npm run bake:publish  # and merge that layer's availability into the manifest from the disk
 npm run dev
 ```
 
@@ -34,7 +38,8 @@ Node 24 (`bake-log.md` §1-§4).
 
 Sources total 3,042,272,356 B (with the 5,248 B `.aux.xml` sidecar); re-hashing all of it costs 2.48 s, so `npm run fetch` verifies by digest by default, and the 5,959,263,751 B `.tif` fallback was not downloaded because the `JP2OpenJPEG` driver worked. Only the gazetteer carries a written use constraint: check upstream terms before redistributing derived imagery.
 
-Tier A (`--top 6`, both layers), tiles per level and measured bytes:
+Tier A (`--top 6`, both layers) — the pyramid as it first shipped, kept because the per-level
+byte table below is Tier A's measurement:
 
 | Level | 0 | 1 | 2 | 3 | 4 | 5 | 6 | total |
 |---|---|---|---|---|---|---|---|---|
@@ -46,14 +51,28 @@ Tier A (`--top 6`, both layers), tiles per level and measured bytes:
   1.3191 and 1.2722 bits/px).
 - **Wall clock 2 h 58 m 03 s** (`real 178m3.232s`; `timings.bakeSeconds` = 10,680.5 s), 150-200 s per full-width band. The cost is JP2 decoding, not resampling: the source's block geometry is `54,582 x 20,000` (full image height), so every band read decodes the whole 5.96 GPix codestream - an L2 smoke bake cost 38 minutes for 84 tiles.
 - Design spec §3's "1.0-1.8 GB" is superseded by the measurement; `bake.py`'s estimator now carries the measured bits/px and predicts 927,405,788 B, an error of -0.00%.
-- **Tier B (`--top 7`) was NOT run, so the next figures are extrapolations**, not measurements (`bake-log.md` §5, §5.1): `project_seconds(7, both, 1024)` puts it at **6.7-8.4 hours** from the measured 150-200 s/band (§5's looser band: 6-12 h) over 128 bands and **87,380 files**, with the estimator at **3.71 GB = 4.00x the measured Tier A total** and the guard asking **5.56 GB** free. It stays opt-in; `--top 6` is the shipped state.
+- **Tier B (`--top 7`) has since been run and is the shipped state** (`d34a505`, 2026-10-09):
+  **87,380 tiles / 2,819,245,403 B** (paper 1,491,944,257, photo 1,327,301,146) in
+  `timings.bakeSeconds` = **36,975.8 s (10 h 16 m)**. The file and byte counts the
+  extrapolation above predicted were exact; the *time* was 24-54% low, because it carried
+  Tier A's per-band rate into a run with twice the bands and a JP2 decode that does not get
+  cheaper. L7 is a **1.2x upsample of the 100 m/px WAC** (px/deg 364.09 wanted against
+  303.23 held) and it is shipped as that, knowingly: the scale readout will say 83 m/px and
+  this README says what produced it. The levels that are *not* an upsample are the separate
+  `ortho` layer.
+- **`ortho` — region-limited L8-L10 from the Kaguya TC orthomosaic at 7.4 m/px: 7,106 tiles /
+  187,755,158 B** inside twelve boxes, streamed out of the remote COG by
+  `npm run bake:deep` in 9 minutes with zero failures and no download of the 78 GB source.
+  It is a second shaded illumination, so it is an overlay with its own attribution and never
+  a blend into `paper`; `public/tiles/ortho/**` is gitignored like every other tile, and the
+  app now probes two tiles per level before it will offer the layer at all.
 
 ## Grid contract, as measured
 
 `512 x 512` px tiles; level `L` has `2^(L+1)` columns x `2^L` rows; **row 0 is north** (`y` increases
 southward, no TMS reversal anywhere); longitude `−180…180`; **planetocentric** latitude `±90`; Moon sphere
 radius **1,737,400 m**, flattening `0.0` - so planetographic and planetocentric coincide and no latitude
-conversion is done. Row 0 = north was measured, not assumed: `tileXYToRectangle(0, 0, 1).north === 90`, headless and in the live page. m/px runs 10,660.55 (L0) → 333.14 (L5) → **166.57 (L6)**, exact `m_per_px(6)` = 166.57113880453207 (`--dry-run` prints 166.6).
+conversion is done. Row 0 = north was measured, not assumed: `tileXYToRectangle(0, 0, 1).north === 90`, headless and in the live page. m/px runs 10,660.55 (L0) → 333.14 (L5) → **166.57 (L6)** → **83.29 (L7)**, exact `m_per_px(6)` = 166.57113880453207 (`--dry-run` prints 166.6), and the region-limited `ortho` continues 41.64 (L8) → 20.82 (L9) → **10.41 (L10)**.
 
 The detail source's native grid is **303.2333 px/deg** (109,164 x 54,582) and falls *between* levels: L6 is
 182.04 px/deg, L7 would be 364.09 px/deg. No power-of-two level equals it, because
@@ -76,9 +95,10 @@ updating `albedoHistogram` and `geometryProof` in the tracked `public/tiles/mani
 `334b6bb` it writes through `manifest.write_manifest` - the one writer this repo has for that artifact, which
 emits LF bytes plus a final newline - instead of `Path.write_text`, so it no longer re-typesets the whole
 tracked file to CRLF. It changes only those two keys: run on this tree it left `manifest.json` byte-identical
-(md5 `721e29a91a8dac525557fc03d144f456` before and after) and `git status` empty, so the tree is dirtied only
-when the gate's numbers actually move. `npm run test` at this commit: vitest **222 passed / 15 files**, pytest
-**178 passed**, `npx tsc --noEmit` clean (209 / 168 was the state when Task 15 landed).
+(md5 `6b2c9c5558d54d6f399a7526b7408821` at the time of writing — it moves whenever the gate's numbers
+do, which is the point of pinning it) and `git status` empty, so the tree is dirtied only
+when the gate's numbers actually move. `npm run test` at this commit: vitest **291 passed / 18 files**, pytest
+**286 passed**, `npx tsc --noEmit` clean (222 / 178 was the state at Task 17, 209 / 168 when Task 15 landed).
 
 **Gate G1** proves Cesium boots on self-hosted assets and that the geodetic `y` origin is what the bake
 writes: `row0north = 90.000°`, `row1north = 0°`, L1 grid `4 x 2`, L2 `8 x 4`, `tileWidth = 512`, radii
@@ -87,20 +107,21 @@ anywhere**. It says nothing about real imagery, and a per-row `y` error in a rea
 browser-detectable: that is G2's job.
 
 **Gate G2** proves the tile grid and the label coordinates agree, using USGS shapefile geometry as an
-independent check of a NASA raster. Measured on level 5 `paper` (raw albedo DN, no gain): mare median
-**33.5** vs highland median **80.5**, contrast **47.0 DN** against a 25 DN floor; histogram over
-536,870,912 pixels in 2,048 tiles, mean 64.34, p33 47, p67 76; **20/20** mare and **16/16** highland
+independent check of a NASA raster. Measured on level 5 `paper` (raw albedo DN, no gain), re-run on
+2026-10-09 against the delivered L7 pyramid: mare median **33.5** vs highland median **81.5**, contrast
+**48.0 DN** against a 25 DN floor; histogram over
+536,870,912 pixels in 2,048 tiles, mean 64.33, p33 47, p67 76; **20/20** mare and **16/16** highland
 markers resolved (floor 15); and the four Apollo 11 traverse features (West 23.4908, 0.6705; Little West
 23.4756, 0.6743; Double 23.4727, 0.6738; Mount Marilyn 40.0000, 1.1300) inside the Mare Tranquillitatis
-bbox (lat `−4.0512…19.3748`, lon `16.924…45.4903`) and reading dark: **28, 28, 28, 57** against p67 = 76.
+bbox (lat `−4.0512…19.3748`, lon `16.924…45.4903`) and reading dark: **29, 30, 30, 56** against p67 = 76.
 The pass is falsifiable, which is the only reason it means anything. Same tiles, lookup deliberately
 mis-registered (`gate-G2.md`):
 
 | registration | mare median | highland median | contrast |
 |---|---|---|---|
-| true | 33.5 | 80.5 | **+47.0 DN** |
-| latitude mirrored (`lat → −lat`, the `y`-flip signature) | 51.5 | 50.0 | **−1.5 DN** |
-| longitude rotated (`lon → lon+180`, the far-side signature) | 76.5 | 60.0 | **−16.5 DN** |
+| true | 33.5 | 81.5 | **+48.0 DN** |
+| latitude mirrored (`lat → −lat`, the `y`-flip signature) | 54.0 | 49.5 | **−4.5 DN** |
+| longitude rotated (`lon → lon+180`, the far-side signature) | 76.5 | 60.5 | **−16.0 DN** |
 
 A footprint version over whole bboxes agrees: +33.0 / −7.0 / −15.0 DN. A flipped or rotated map inverts the
 sign instead of merely weakening it. Honest scope: G2's floor is ~333 m (one L5 pixel), so it catches
@@ -114,9 +135,10 @@ it proves the two datasets *agree*, not that either is independently right. The 
 - **NASA SVS CGI Moon Kit** `lroc_color_poles.tif`: 27,360 x 13,680 at 76 px/deg (~399 m/px), poles filled.
   Hue only, through a chromaticity transfer (`chi = B/mean(B)`, detail gain `k = 0.4`) into which the WAC's
   high frequencies are injected.
-- **IAU Gazetteer of Planetary Nomenclature** (USGS Astrogeology): 9,087 records, curated to the 600 in
-  `public/data/features.json` (tiers 0/1/2/3 = 17/134/368/81; tier 3 = the 81 astronaut-named traverse
-  features).
+- **IAU Gazetteer of Planetary Nomenclature** (USGS Astrogeology): 9,087 records, curated to the
+  1,585 in `public/data/features.json` (tiers 0/1/2/3 = 17/134/1353/81; tier 3 = the 81
+  astronaut-named traverse features). Amendment 2 D9 lifted the old 600-name budget and the
+  70 km crater floor to 15 km, so the search box says 1,585 and means it.
 
 Plainly: **nothing human-made is visible at any public global resolution** - no lander, no descent stage, no
 tracks - because no such product exists, not because the renderer is soft. The colour is **a chromaticity
@@ -137,16 +159,21 @@ is U+2019 on purpose):
 
 ## Known limits and open items
 
-- **Polar albedo hole (upstream, not a bake defect).** 35,454,232 of 536,870,912 level-5 `paper` pixels -
-  **6.6039%** - read DN 0, concentrated above `|lat| 73°` (rows 0-2 and 29-31; 68 tiles more than 50% black,
-  all there). Sampling the source confirms it: 13x13 windows at 0°E / `±89.5°` are **100.0%** and **95.9%**
-  exact zeros against 0.0% at the equator. Per hemisphere, counted off the delivered tiles with the same read
-  `scripts/proof.py` uses (`Image.open(...).convert('L')`): the north's rows 0-15 hold 15,622,097 zero pixels
-  of 268,435,456 = **5.8%**, the south's rows 16-31 hold 19,832,135 = **7.4%**, and the dense cap alone (rows
-  0-2, `|lat| >= 73.1°`) is **4.9%** of a hemisphere. An earlier revision of this bullet said "~10% of each
-  hemisphere's disc" - the same wording sits at `gate-G2.md` line 442 and in `verify-16.md` - and **no
-  measurement supports it**: 10.9% only appears if you divide *both* polar caps (rows 0-2 + 29-31) by *one*
-  hemisphere, which is not a per-disc statement, so the figure is dropped. So **in paper mode the poles look
+- **Polar albedo hole (upstream, not a bake defect).** 35,183,101 of 536,870,912 level-5 `paper`
+  pixels - **6.5534%** - read DN 0, concentrated above `|lat| 73°`; 68 tiles are more than 50%
+  black, all of them in the caps. Sampling the source confirms it: 13x13 windows at 0°E /
+  `±89.5°` are **100.0%** and **95.9%** exact zeros against 0.0% at the equator. Per hemisphere,
+  recounted on 2026-10-09 over all 2,048 delivered tiles with the same read `scripts/proof.py`
+  uses (`Image.open(...).convert('L')`, `work/polar-measure-l7.txt`): the north's rows 0-15 hold
+  15,494,996 zero pixels of 268,435,456 = **5.77%**, the south's rows 16-31 hold 19,688,105 =
+  **7.33%**, and the dense caps alone are **4.9%** of the north (rows 0-2) and **6.0%** of the
+  south (rows 29-31). The per-row shares run 48.0 / 19.4 / 11.0 / 5.6 / 2.7% down the north and
+  9.3 / 17.8 / 24.2 / 53.5% up the south. An earlier revision of this bullet said "~10% of each
+  hemisphere's disc" - the same wording sat at `gate-G2.md` line 442 and in `verify-16.md`, now
+  corrected - and **no measurement supports it**: 10.9% only appears if you divide *both* polar
+  caps (rows 0-2 + 29-31) by *one* hemisphere, which is not a per-disc statement, so the figure
+  is dropped. The pre-L7 counts (6.6039%, 5.8%, 7.4%) were also superseded by the recount:
+  deriving L0-L6 from the L7 core moved them slightly. So **in paper mode the poles look
   punched out** - black fields in a cream sheet, denser above `|lat| 73°` - while globe mode loses detail
   instead of going black, because the colour base fills the poles. Deliberately not muted:
   a veil lifting black toward cream would fabricate albedo the source does not have.
@@ -155,38 +182,41 @@ is U+2019 on purpose):
   straddles the `±180` vs `0-360` convention. `scripts/labels.py` ships those with `bbox: null` so nothing
   downstream trusts them, names the set, and exits nonzero only if it *grows* (`bbox defects: 19 found, 20
   known, 0 new`) - a guard on our regressions, not a claim that USGS data is perfect. 12 of them are curated
-  tier-3 traverse features, hence the 12 nulls in `features.json`. Legitimate seam-crossing bboxes
+  tier-3 traverse features and the thirteenth is `Brill`, hence the 13 nulls in `features.json`
+  (`test_labels.py:154` pins it at 13). Legitimate seam-crossing bboxes
   (`west > east`, 10 curated near-0° features) are not defects, and `bbox_contains` is the only legal
   containment test.
 - **The paper tint is decor.** Paper mode's warm cast is a CSS `sepia/saturate/contrast/brightness` filter plus a `#efe9dc` base colour: no hypsometric tints, contours, relief shading or elevation layer of any kind.
-- **Not yet verified in a browser.** No visible browser surface existed during implementation
-  (`NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`, viewport `0x0`, `visibilityState=hidden`), so each item below is
-  unit-tested or numerically probed and still needs a real tab:
-  - the **Paper↔Globe morph, in whole and in part**: nothing about it has been observed under the code that
-    ships today. What `verify-10.md` records - every toggle finishing through the `completeMorph()` fallback
-    in 4.0-8.7 s, and the camera-preservation table - was measured against the *previous* build, whose pump
-    called `scene.render(wallClock)` under a 4 s deadline. That pump advanced nothing: in Cesium 1.146 the
-    morph tweens are updated only by `Scene.initializeFrame()`, whose sole caller in the render path is
-    `CesiumWidget.render()`; the fix pumps through `viewer.cesiumWidget.render()` on a `setTimeout` loop and
-    adds a wall-clock watchdog on the morph **queue** (`MORPH_QUEUE_DEADLINE_MS`), commit `13322e9`, with the
-    harness made to drive a mode change through the same latch a click does in `b1623f2`. The one live probe
-    made before that fix saw `scene.mode` hold `MORPHING` for minutes. So the transition is open, and the
-    **end state is open too** - the old 4 s-deadline measurements do not transfer to the shipped mechanism.
-    To close it: `npm run dev` (not a built `start` - the harness globals are dev-only), a **visible** tab,
-    **one click on Paper**, then read `__moonHarness.sceneMode()` (must become `SCENE2D`) and
-    `document.querySelector('#cesiumContainer').dataset.mode` (must follow it to `paper`), and say out loud
-    whether it animated or snapped. The deadline now sits at 15 s, which makes a jump-cut in a visible tab
-    less likely, not impossible; and `CesiumWidget.render()` is gated on `_canRender` (canvas size non-zero),
-    so a 0x0 tab still cannot animate a morph at all.
-  - the **three failure panels** of plan Task 15 and spec §4.4 (unbaked tiles/manifest, missing Cesium
-    static assets, no WebGL2) have never been forced in a real tab. `docs/superpowers/specs/verify-15.md`
-    says so itself: the boot order and the panels' text are proven with injected fakes and
-    `react-dom/server` renders, and the three real paths are listed as owed to the Task 18 sweep. The
-    WebGL2 path cannot even be provoked in this harness.
-  - the **four per-mode screenshots** owed by `verify-16.md` (globe+photo, globe+paper, paper+paper,
-    paper+photo at L2 and L6) do not exist, so no claim is made about how either mode looks.
-  - also owed: label subtlety and overlap in a real view, real mouse-drag behaviour, the `±180` strip and
-    the poles viewed as pixels, and frame rate during drag-rotate (GPU-dependent, reported not asserted).
+- **Visually verified on 2026-10-08, and only partly.** `docs/superpowers/specs/gate-G3-live.md` §7
+  records a real Chrome pass with three images read by eye (`work/g3-globe-22000km.png`,
+  `g3-globe-hemisphere.png`, `g3-paper-flat.png`): the Moon is recognisable and correctly oriented,
+  mare boundaries and Tycho's rays are legible, flat mode is a true equirectangular sheet with no
+  visible seam. That pass found **five defects no test could see** - colour that renders grey, a paper
+  tint with no warm shift, a default framing that put a ~110 px disc on a 564x786 canvas, landing-site
+  dots out-shining the names, and a "compass rose" that turned out to be the Next.js dev badge - and §8
+  measures all five fixed. Since then the claim has been *narrowed*, not withdrawn:
+  - **Whether a morph animates or jump-cuts** is still unheard of. The end state is proven and the
+    mechanism changed after the old measurements - in Cesium 1.146 only `CesiumWidget.render()` advances
+    the morph tweens, so the pump is `viewer.cesiumWidget.render()` on a `setTimeout` loop with a 15 s
+    wall-clock watchdog on the morph queue (`13322e9`, `b1623f2`) - but every `verify-10.md` figure
+    (4.0-8.7 s per toggle) was taken against the pump that advanced nothing. To close it: `npm run dev`
+    (the harness globals are dev-only), a **visible** tab, one click on Paper, then read
+    `__moonHarness.sceneMode()` and `#cesiumContainer`'s `data-mode`, and say out loud whether it moved.
+  - **The three failure panels** of plan Task 15 and spec §4.4 have never been induced in a real tab;
+    `verify-15.md` says so itself. Inducing the unbaked one means moving 87,380 git-ignored tiles.
+  - **Mouse drag, wheel zoom and keyboard pan** have never been driven as real input events.
+  - **The `±180°` strip and the poles as rendered pixels** are proven numerically
+    (`tierA-check-transcript.txt`), not in an image; the polar hole above is 6.55% of the L5 grid.
+  - **The `ortho` overlay has never been looked at.** It is verified live over CDP - tiles-to-render,
+    request counts, frame cost, attach/detach, and the not-on-this-machine path - but every one of those
+    is a number, not a pixel. Nobody has judged whether a 10.4 m/px Kaguya box beside a 83 m/px WAC
+    surround looks like a feature or a fault. That is the first item for the Task 18 sweep.
+  - **Frame rate and spec §4.5's whole performance budget** are unmeasured and largely unimplemented:
+    no `maximumScreenSpaceError`, no request-concurrency cap, no latency or memory figures. The one
+    exception is the overlay's cost, measured twice in `docs/.../ortho.ts`'s `minimumLevel` note:
+    +21.8% frame time under software rasterisation inside a region, nothing outside it.
+  - `verify-16.md`'s four per-mode screenshot combinations (globe/paper x photo/paper at L2 and L6)
+    still do not exist.
 - **Spec §4.5's performance budget is neither implemented nor measured.** The budget asks for at most 16
   simultaneous tile requests (enforced "through Cesium's `maximumScreenSpaceErrors` / imagery request
   scheduling rather than by hoping the browser queues politely"), median tile response < 150 ms, L0 painted

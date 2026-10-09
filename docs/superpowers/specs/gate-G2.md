@@ -439,7 +439,12 @@ Why it does not weaken the gate:
   requirement "mare median below the mean" is met against the *lowered* mean (33.5 < 64.34),
   so it would be met a fortiori against 68.9. No threshold was moved because of this.
 - Consequences to carry forward: in the `paper` layer the globe's polar caps will render
-  **black**, ~10% of each hemisphere's disc in an equator-facing view, and Task 16 (paper
+  **black** — 5.77% of the northern hemisphere's pixels and 7.33% of the southern, recounted
+  on the delivered L7 pyramid on 2026-10-09 (`README.md`, `work/polar-measure-l7.txt`); an
+  earlier revision of this line said "~10% of each hemisphere's disc" and no measurement
+  supported it — 10.9% only appears by dividing *both* caps by *one* hemisphere — and
+  `verify-16.md` carried the same unsupported figure until it was corrected the same day.
+  In an equator-facing view that reads as punched-out fields at both poles, and Task 16 (paper
   look) should decide whether to mute it. Any later statistic derived from `paper` DN — a
   histogram legend, an albedo colour ramp, a "low contrast" hint — must account for a 6.6%
   spike at 0. Task 18's Gate G3 should include a visual check of the poles. And
@@ -512,3 +517,35 @@ fresh clone. Its output is the source of every figure in the two tables that fol
    what one pixel can do.
 6. The polar black is upstream. Worth one line in the README's limitations section when
    Task 18 writes it.
+
+## Re-run on the delivered L7 pyramid — 2026-10-09
+
+Everything above this line is the **Task 9 run of record**: Tier A (L0-L6), 2026-10-07, and
+it is left untouched because it is what that agent measured. The pyramid has since gone to
+L7 (`d34a505`) and gained a region-limited `ortho` layer, and deriving L0-L6 from an L7 core
+moved the parent tiles, so `scripts/g2_geometry_probe.py` was run again over the delivered
+tree. `npm run proof` had already rewritten `geometryProof` and `albedoHistogram` in
+`public/tiles/manifest.json`; these are the probe's own numbers, which are the falsifiability
+half the manifest does not carry:
+
+| mode | mare median | highland median | contrast | sigma |
+|---|---|---|---|---|
+| **true registration** | 33.5 | **81.5** | **+48.0 DN** | +1.19 |
+| latitude mirrored (`lat -> -lat`, the y-flip signature) | 54.0 | 49.5 | **-4.5 DN** | -0.11 |
+| longitude rotated (`lon -> lon+180`, the far-side signature) | 76.5 | 60.5 | **-16.0 DN** | -0.40 |
+
+Footprint lookups (median of every L5 pixel inside each gazetteer bbox) agree with the Task 9
+run and with each other: true **+33.0**, flip **-7.0**, rot **-15.0 DN**. The four Apollo 11
+traverse features now read **West 29, Little West 30, Double 30, Mount Marilyn 56** against
+`p67 = 76` -- previously 28/28/28/57, and all four still dark of the 76 DN ceiling. Global L5
+`paper`: mean **64.33**, sd 40.35; exact-black **35,183,101 of 536,870,912 = 6.5534%** (was
+6.6039% on the Tier A tree), with 68 tiles more than half black.
+
+**Verdict is unchanged and the margin grew**: +48.0 DN against a 25 DN floor, both mis-registrations
+still inverting the sign rather than merely weakening it. What moved is the *level of detail in the
+parents*, not the geometry, which is exactly what a gate about geometry should be insensitive to --
+had the flip/rot columns moved with the true column, that would have been the alarm.
+
+Two things this re-run does **not** establish, stated so nobody reads more into it: it says nothing
+about the `ortho` layer's tiles (no gazetteer marker in the twelve boxes is at a level the gate
+samples), and it says nothing about how the deep layer *looks*, which remains owed to Task 18.

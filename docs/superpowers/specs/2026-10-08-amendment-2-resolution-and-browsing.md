@@ -209,22 +209,45 @@ and 512 px samples centred at -84, -88 and -89.6 read back 99.8-100 % below 3 DN
 advertise them as terrain. That is the same failure the plan refuses in a COG *window*
 (`stream_bake.py`: rasterio's cropped-window lie), only with the holes baked in.
 
-**7.2 The grid cannot express what the other source has.** `nac-spole` genuinely covers
-the cap: 364,214 px square at 1 m, polar stereographic on latitude of origin -90, radius
-182,107 m, which is exactly to -84.0. But a geographic tiling scheme samples *latitude* on
-a fixed grid, so one tile row at
+**7.2 The grid cannot express what the other source has — and this paragraph was wrong
+the first time.** `nac-spole` genuinely covers the cap: 364,214 px square at 1 m, polar
+stereographic on latitude of origin -90, radius 182,107 m, which is exactly to -84.0. A
+geographic tiling scheme samples *latitude* on a fixed grid, so one tile row is
+`m_per_px(L)` in latitude and `m_per_px(L) × cos(lat)` in longitude at that latitude:
 
-| level | latitude sampling | longitude sampling at -89.6 |
-|---|---|---|
-| L8 | 41.6 m/px | 0.0073 m/px wanted |
-| L9 | 20.8 m/px | 0.0037 m/px wanted |
-| L10 | 10.4 m/px | 0.0018 m/px wanted |
+| level | latitude | longitude at -84 | at -88 | at -89.6 | honest (≤ 1 m/px) only where |
+|---|---|---|---|---|---|
+| L8 | 41.64 m/px | 4.35 | 1.45 | 0.29 | `\|lat\| ≤ 88.6°` |
+| L9 | 20.82 m/px | 2.18 | 0.73 | 0.145 | `\|lat\| ≤ 87.3°` |
+| L10 | 10.41 m/px | 1.09 | 0.36 | 0.073 | `\|lat\| ≤ 84.5°` — which is outside the box |
 
-(30,310.6 m per degree of latitude, and a tile spans 180/2^L degrees over 512 px; the
-longitude figure is that multiplied by cos(latitude) at the tile's poleward edge). So 1 m/px
-arrives downsampled 20:1 in latitude while the innermost rows ask for sub-centimetre
-longitude sampling that no sensor provides. **The 1 m/px pole §6 hoped for is unreachable
-in this tiling scheme at any level the grid has.**
+(arc metres per degree = `1,737,400·π/180` = 30,323.35; a tile spans `180/2^L` degrees of
+latitude and `360/2^(L+1)` of longitude over 512 px.) So a 1 m/px source arrives **downsampled
+40:1 in latitude** — the grid simply cannot carry that much detail northward — while the
+poleward rows ask for finer-than-1 m longitude sampling and would be **interpolated**. The
+first version of this table quoted 0.0073 m/px for L8 at -89.6 where the arithmetic gives
+0.29, a 40× error, and said "unreachable at any level" when the honest reading is level- and
+latitude-specific: L8 is real data from -84 to about -88.6 and interpolated inside that.
+**Conclusion unchanged, reasoning corrected.**
+
+**The asymmetry is the whole point, and it cuts the other way for the layer that shipped.**
+For an **equirectangular** source the `cos(lat)` factor appears on *both* sides — the source's
+own pixels converge with the meridian grid exactly as the tile's do — so the ratio is
+latitude-invariant and there is no polar problem to find: Kaguya TC at 4,096.09 px/deg against
+this grid is a **5.63:1 downsample at L8, 2.81:1 at L9 and 1.41:1 at L10, at every latitude
+including -89.6**. That is why `check_plan`'s equatorial comparison (`grid.px_per_deg(L)`
+against the source's px/deg) is *correct* for `kaguya-tc` and *meaningless* for `nac-spole`,
+and why the projection refusal has to come first — see §7.5. A claim made earlier in this
+session, that 23 of the 7,106 delivered tiles were upsampled by 0.4% because a poleward tile
+row needs `px_per_deg(L)/cos(lat)`, was exactly this error in the opposite direction: it
+applied the convergence to the demand and not to the supply. No delivered tile is upsampled.
+
+**The 1 m/px south pole §6 hoped for is not deliverable in this pyramid.** Not because the
+source is missing — it is there and measured — but because a fixed-degree grid throws away
+most of it in latitude and then asks for more than it has in longitude, at the same time.
+Reaching 1 m/px at the pole needs a polar-stereographic *view*: its own projection, its own
+tiling, and its own rendering path. That is an architecture question, and §7.5 closes the
+bake-side question instead.
 
 **7.3 The cost is not the 9 minutes the site boxes took.** Measured on the delivered run:
 7,106 tiles, 187,755,158 bytes, 9 minutes, i.e. ~13 tiles/s and ~26.4 KB per tile. The cap
@@ -253,3 +276,27 @@ A real deep south pole is a **polar-stereographic view** — its own projection,
 tiling, or a locally-cut image — which is an architecture question and not a bake. It stays
 out of scope for this amendment. `nac-spole` remains in `regions.SOURCES` as the measured
 row it is, because the projection refusal needs a real polar projection to refuse.
+
+**7.5 Two rulings the whole-branch review extracted, and what happened to them.**
+
+- *The projection refusal must be the last word on a projected source.* `check_plan` used
+  to append a resolution verdict after refusing by projection — "L9 needs 1456.36 px/deg
+  but source 'nac-spole' is 1011.71 px/deg" — which compares degrees-per-pixel of a
+  stereographic pixel against this grid and means nothing (§7.2). The row was left in
+  `SOURCES` anyway, so the message was reachable on shipped data, and the test that should
+  have caught it used `pxPerDeg: 30_000`, the one value that makes the second message
+  unable to fire. `1e7c1a5` stops at the projection and re-points the fixture at the
+  measured 1011.71, so the single-refusal assertion now discriminates.
+- *The mixing ban, in the compositor rather than the bake.* The review's sharpest point:
+  the default base layer is `photo`, itself a shaded relief product, so one click stacks
+  Kaguya's shaded orthophoto over a second shaded illumination and the ban in §2 item 4 is
+  reachable in the shipped default state — not through the bake, which stays clean. The
+  ruling (the user's, 2026-10-09): **accept it, and let D11's region outlines be the
+  mitigation.** The reasoning, stated so a later reader knows what was traded: inside a box
+  the overlay is opaque, so no *pixel* is a blend of two sources; what the ban permits to
+  survive is a visible step at the twelve box edges and a paper-mode CSS lift calibrated to
+  WAC albedo DN running over Kaguya pixels. Outlines and framing make the seam attributable
+  instead of mysterious; muting it by blending would be the thing actually forbidden.
+  Two consequences follow and are owed work, not debate: D11 is now load-bearing rather than
+  cosmetic, and the paper-mode filter needs its own measured answer for overlay pixels
+  (`§8` of `gate-G3-live.md` covers the base layers only).

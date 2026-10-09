@@ -107,7 +107,10 @@ source has none** — it would put invented pixels on a map whose DN values are 
 evidence behind a geometry gate. The consequence is stated plainly instead:
 
 > **In paper mode the polar caps will look punched out** — irregular black fields inside
-> a cream sheet, roughly 10% of each hemisphere's disc in an equator-facing view at L5,
+> a cream sheet — 5.77% of the northern hemisphere's L5 pixels and 7.33% of the southern
+> (recounted 2026-10-09 over all 2,048 delivered tiles, `work/polar-measure-l7.txt`; the
+> "~10% of each hemisphere's disc" this line originally carried was unsupported — it only
+> appears if both caps are divided by one hemisphere), in an equator-facing view at L5,
 > and the contrast against the new paper tone is *worse*, not better, than it was against
 > the old black background. That is the WAC albedo gap, not a rendering failure and not a
 > tile-load stall. In globe/`photo` mode the same region shows a loss of detail rather
