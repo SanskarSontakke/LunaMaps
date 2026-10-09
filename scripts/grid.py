@@ -17,7 +17,7 @@ MOON_RADIUS_M = 1_737_400.0
 # disk guard still refuses a plan it cannot pay for.
 MAX_TOP_LEVEL = 10
 DEG2RAD = math.pi / 180.0
-ARC_METRES_PER_DEGREE = MOON_RADIUS_M * DEG2RAD  # 30_322.4 m
+ARC_METRES_PER_DEGREE = MOON_RADIUS_M * DEG2RAD  # 30,323.35 m of arc per degree
 
 
 def level_cols(L: int) -> int:

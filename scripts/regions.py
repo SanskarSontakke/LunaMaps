@@ -239,7 +239,9 @@ def derive(records, names, min_size_deg: float, min_level: int, max_level: int):
         else:
             box = None
         if box is None:
-            half = max(min_size_deg, ((rec.get('diameter') or 0.0) / 30_322.4) * 1.5) / 2
+            half = max(min_size_deg,
+                       ((rec.get('diameter') or 0.0)
+                        / grid.ARC_METRES_PER_DEGREE) * 1.5) / 2
             box = [lon - half, lat - half, lon + half, lat + half]
             source = 'centre+size'
         out.append({

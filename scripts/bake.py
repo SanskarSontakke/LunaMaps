@@ -250,8 +250,8 @@ def disk_refusal(est: dict, needed: int, free: int, out_dir: str,
         f'validates stays complete -- see run())',
         f'  or keep this plan and point --out at a volume with at least '
         f'{needed / 1e9:.2f} GB free.',
-        f'  Tier B is opt-in: declining it is a valid answer. L6 (166.5 m/px) '
-        f'is already shipped and verified (Gate G2).',
+        f'  Tier B is opt-in: declining it is a valid answer. L7 (83.29 m/px) is '
+        f'what the delivered manifest ships, verified by Gate G2 against it.',
     ])
 
 
