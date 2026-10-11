@@ -21,13 +21,32 @@ export const MEASURED_TILE_SATURATION = 0.05;
  *  grey globe came from the 1.04 that was here before. */
 export const GLOBE_SATURATE = 2.6;
 
-/** Albedo's mean is 64/255 (`albedoHistogram` in public/tiles/manifest.json).
+/** Albedo's mean is 64.33/255 (`albedoHistogram` in public/tiles/manifest.json).
  *  `contrast(<1)` compresses toward mid grey and `brightness(>1)` shifts up; CSS
  *  filters are affine, so together they are the floor-plus-scale that turns a
  *  dark albedo map into a light sheet. No gamma is available here, and none is
- *  claimed. */
-export const PAPER_CONTRAST = 0.72;
-export const PAPER_BRIGHTNESS = 1.55;
+ *  claimed.
+ *
+ *  The pair is chosen against the TOP of that distribution, not just its mean.
+ *  In DN units the chain is `out = b·(c·x + 127.5·(1−c))`, so the input that
+ *  saturates is `(255 − 127.5·b·(1−c)) / (b·c)`. The previous pair (0.72, 1.55)
+ *  put that at **DN 178.91** while the shipped histogram has p99 = 197 — every
+ *  pixel above 179 rendered pure white, measured 1.781% of all 536,870,912
+ *  pixels of the L5 layer, and the brightest anorthositic highlands, ray systems
+ *  and craters like Aristarchus live in exactly that band. `src/test/paperClip.test.ts`
+ *  pins it.
+ *
+ *  `b ≤ 2/(1+c)` is the condition for input DN 255 to still land at or below 255,
+ *  i.e. for the filter to clip nothing in the uint8 domain at all. At 0.53 that
+ *  bound is 1.30719; 1.307 sits just inside it, and the pair was then chosen so
+ *  the output mean stays where the old one was (123.0 against 127.1 measured),
+ *  because the sheet is meant to read as light paper. The cost is honest and
+ *  worth stating: the slope drops from 1.116 to 0.693, so mare-to-highland
+ *  separation is gentler than it was. Trading a flat white wall for a softer
+ *  gradient is the right way round — the wall destroys detail, the gradient only
+ *  reduces its punch. */
+export const PAPER_CONTRAST = 0.53;
+export const PAPER_BRIGHTNESS = 1.307;
 export const PAPER_SEPIA = 0.42;
 /** Above 1 because the previous look put 0.55 here and cancelled its own tint. */
 export const PAPER_SATURATE = 1.25;

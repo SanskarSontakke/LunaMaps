@@ -64,7 +64,22 @@ describe('the paper tint lives in the renderer, not the bake', () => {
       ((v / 255 - 0.5) * PAPER_CONTRAST + 0.5) * PAPER_BRIGHTNESS;
     expect(shown(33.5)).toBeGreaterThan(0.3); // mare leaves the near-black
     expect(shown(80.5)).toBeLessThan(0.75); // highlands do not blow out
-    expect(shown(80.5) - shown(33.5)).toBeGreaterThan(0.15); // relief survives
+    // Relief survives — with a ceiling that is arithmetic, not taste. Writing the
+    // chain as `out = b·(c·x + 127.5·(1−c))`, three things cannot all hold:
+    //
+    //   1. nothing clips        ->  b <= 2/(1+c)
+    //   2. it is still paper    ->  out(64.33) >= 115
+    //   3. relief >= 0.15       ->  b·c·(80.5-33.5)/255 >= 0.15  ->  b·c >= 0.812
+    //
+    // The largest slope compatible with (1) is 2c/(1+c), which reaches 0.812 only
+    // at c = 0.681, b = 1.190 — and that pair puts the mean at 100.6, failing (2).
+    // Sweeping the bound, the best relief available while staying at or above
+    // mean 115 is ~0.13. So the old 0.15 was not a standard the filter met; it was
+    // a standard met *by* clipping everything above DN 178.91 to pure white, which
+    // is the defect `src/test/paperClip.test.ts` now forbids. The bar is 0.12
+    // because that is what the constraint actually allows, and `paperClip`'s
+    // gradient assertions are what stop it being bought back with a white wall.
+    expect(shown(80.5) - shown(33.5)).toBeGreaterThan(0.12); // relief survives
     expect(PAPER_SEPIA).toBeGreaterThan(0);
     expect(PAPER_SATURATE).toBeGreaterThanOrEqual(1); // the tint is not undone
   });

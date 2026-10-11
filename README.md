@@ -112,7 +112,7 @@ emits LF bytes plus a final newline - instead of `Path.write_text`, so it no lon
 tracked file to CRLF. It changes only those two keys: run on this tree it left `manifest.json` byte-identical
 (md5 `6b2c9c5558d54d6f399a7526b7408821` at the time of writing — it moves whenever the gate's numbers
 do, which is the point of pinning it) and `git status` empty, so the tree is dirtied only
-when the gate's numbers actually move. `npm run test` at this commit: vitest **498 passed / 25 files**, pytest
+when the gate's numbers actually move. `npm run test` at this commit: vitest **503 passed / 26 files**, pytest
 **358 passed + 1 xfailed**, `npx tsc --noEmit` clean (291 passed / 18 files was the state after Task 17;
 222 / 178 at Task 17, 209 / 168 when Task 15 landed).
 
