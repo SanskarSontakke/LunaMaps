@@ -119,9 +119,25 @@ itself (deployment A plus a small committed subset).
 - `src/` contains no `http(s)://` string except an IAU link in a test, and three `fetch(`
   calls, all of which resolve through `src/lib/tileSource.ts`. So the one build-time
   network egress in the project is `next/font/google` in `src/app/layout.tsx`.
-- Verified in this repository as of writing: `npx tsc --noEmit` clean, `npx vitest run`,
-  and `npm run test` (vitest then the pytest suite). `npm run build` has to be run with
-  the dev server **stopped**: `next dev` and `next build` share `.next`, and building over
+- **The production build is verified, and it needed fixing to get there.** `npm run build`
+  compiled, linted and prerendered five static pages while the resulting app rendered a
+  permanently empty page: one emitted chunk threw `SyntaxError: Octal escape sequences are
+  not allowed in template strings` at parse time, so its dependents never loaded and React
+  never hydrated. The cause is `@spz-loader/core`, a Cesium dependency that carries its WASM
+  point-cloud decoder as a template literal of raw control bytes; re-emitting it during the
+  client build turns a NUL into a `\0` escape followed by a digit. `next.config.mjs` aliases
+  that module to `false` for the client build, which is safe here because no `.spz` point
+  cloud is ever loaded — and it is the reason a Vercel deploy of any commit before
+  `057884d` would have shown a blank page. `work/verify_production.mjs` is the check: it
+  drives `next start` with no dev harness available, and asserts hydration, the gazetteer
+  count, the area picker and 2,620 painted outline pixels.
+- **`next dev` does not exercise any of this.** 498 unit tests and every browser probe passed
+  against the dev server while the shipped bundle was dead, so a green `npm run test` is not
+  evidence that a deployment works. Run `npm run build` and load the result before publishing.
+- Verified in this repository as of writing: `npx tsc --noEmit` clean, `npx vitest run`
+  (498 passed / 25 files), `npm run test` (vitest then the 358-test pytest suite), and
+  `npm run build` + `next start` + the production probe above. `npm run build` has to be run
+  with the dev server **stopped**: `next dev` and `next build` share `.next`, and building over
   a live dev server corrupts both (it produced `Cannot find module './897.js'` 500s and
   destroyed every CDP execution context for an hour of this session). That is a workflow
   trap, not a config problem, and `vercel.json` sets `buildCommand` explicitly so a
