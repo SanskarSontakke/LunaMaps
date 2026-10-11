@@ -112,8 +112,9 @@ emits LF bytes plus a final newline - instead of `Path.write_text`, so it no lon
 tracked file to CRLF. It changes only those two keys: run on this tree it left `manifest.json` byte-identical
 (md5 `6b2c9c5558d54d6f399a7526b7408821` at the time of writing — it moves whenever the gate's numbers
 do, which is the point of pinning it) and `git status` empty, so the tree is dirtied only
-when the gate's numbers actually move. `npm run test` at this commit: vitest **291 passed / 18 files**, pytest
-**286 passed**, `npx tsc --noEmit` clean (222 / 178 was the state at Task 17, 209 / 168 when Task 15 landed).
+when the gate's numbers actually move. `npm run test` at this commit: vitest **498 passed / 25 files**, pytest
+**358 passed + 1 xfailed**, `npx tsc --noEmit` clean (291 passed / 18 files was the state after Task 17;
+222 / 178 at Task 17, 209 / 168 when Task 15 landed).
 
 **Gate G1** proves Cesium boots on self-hosted assets and that the geodetic `y` origin is what the bake
 writes: `row0north = 90.000°`, `row1north = 0°`, L1 grid `4 x 2`, L2 `8 x 4`, `tileWidth = 512`, radii
