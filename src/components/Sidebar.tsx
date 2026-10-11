@@ -1,7 +1,9 @@
 'use client';
 import { memo, useEffect, useMemo } from 'react';
 import FilterPanel, { type SortState } from './FilterPanel';
+import AreaSelect from './AreaSelect';
 import { applyFilters, formatCount, showingLabel, type FilterState } from '@/lib/filters';
+import type { ViewRegion } from '@/lib/viewRegions';
 import type { Feature } from '@/types';
 
 /**
@@ -50,6 +52,12 @@ export interface SidebarProps {
   onSortChange: (next: SortState) => void;
   onClearFilters: () => void;
   onChoose: (feature: Feature) => void;
+  /** D11's areas, which are the other half of this column: the filters say which
+   *  names the map shows, the area picker says which part of the map to look at.
+   *  `null` while regions.json is loading or was refused by its own reader. */
+  areas: readonly ViewRegion[] | null;
+  selectedAreaId: string | null;
+  onAreaChoose: (id: string | null) => void;
 }
 
 const round = (km: number): number => (km < 10 ? Math.round(km * 10) / 10 : Math.round(km));
@@ -99,6 +107,9 @@ function Sidebar({
   onSortChange,
   onClearFilters,
   onChoose,
+  areas,
+  selectedAreaId,
+  onAreaChoose,
 }: SidebarProps) {
   const total = features ? features.length : 0;
   const rows = useMemo(
@@ -143,6 +154,15 @@ function Sidebar({
           role="region"
           aria-label="Place names"
         >
+          {areas && (
+            // Outside the `features` conditional on purpose: an area is a place on
+            // the map, and it stays selectable when the gazetteer is missing.
+            <AreaSelect
+              areas={areas}
+              selectedId={selectedAreaId}
+              onChoose={onAreaChoose}
+            />
+          )}
           {features ? (
             <>
               <FilterPanel

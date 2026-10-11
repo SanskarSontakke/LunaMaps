@@ -42,6 +42,14 @@ import {
 import type { LabelFilter } from '@/lib/labels/entities';
 import Sidebar from './Sidebar';
 import type { SortState } from './FilterPanel';
+import { areaRectangle } from '@/lib/cesium/areaOutline';
+import {
+  createAreaSource,
+  drawArea,
+  flyToArea,
+} from '@/lib/cesium/areaEntities';
+import { parseViewRegions } from '@/lib/viewRegions';
+import type { ViewRegion } from '@/lib/viewRegions';
 import { attachKeyboard } from '@/lib/keyboard';
 import {
   createUrlSync,
@@ -297,6 +305,37 @@ export default function MoonMap() {
   // paint must match, and `window` is not readable during render. `Sidebar`'s own
   // effect opens it on a wide viewport.
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // ---- Amendment 2, D11: browsable areas --------------------------------------
+  // The 61 `views` in regions.json. Refs as well as state because two things that
+  // do not re-render have to agree with the one thing that does: the viewer effect
+  // (which creates the entity source once, long before the fetch resolves) and the
+  // selection callback (which must not change identity every time the area list
+  // arrives).
+  const [areas, setAreas] = useState<ViewRegion[] | null>(null);
+  const [selectedAreaId, setSelectedAreaId] = useState<string | null>(null);
+  const areasRef = useRef<ViewRegion[] | null>(null);
+  const selectedAreaRef = useRef<string | null>(null);
+  const areaSourceRef = useRef<Cesium.CustomDataSource | null>(null);
+  /** Re-draw whatever the refs currently say. Safe before either exists. */
+  const renderArea = useCallback(() => {
+    const source = areaSourceRef.current;
+    if (!source) return 0;
+    const id = selectedAreaRef.current;
+    const view = areasRef.current?.find((a) => a.id === id) ?? null;
+    return drawArea(source, view);
+  }, []);
+  const chooseArea = useCallback(
+    (id: string | null) => {
+      selectedAreaRef.current = id;
+      const view = areasRef.current?.find((a) => a.id === id) ?? null;
+      const rectangle = view ? areaRectangle(view) : null;
+      const viewer = viewerRef.current;
+      if (viewer && !viewer.isDestroyed() && rectangle) flyToArea(viewer, rectangle);
+      setSelectedAreaId(id);
+      renderArea();
+    },
+    [renderArea],
+  );
   // The names the filters keep, derived from the same `applyFilters` the list
   // uses, so the map cannot show what the list refuses to name. `null` while
   // there is no gazetteer, which the label layer reads as "no filter".
@@ -725,6 +764,11 @@ export default function MoonMap() {
     // graph to anything running in the page. The globals are typed `| undefined`
     // and the cleanup below resets them, so a prod build simply leaves them
     // undefined — no behaviour change to the map itself.
+    // D11: the area outlines live in their own data source, never the label one,
+    // because the declutter calls removeAll() on its source up to 8 times a
+    // second and would take the selected area's outline with the names.
+    areaSourceRef.current = createAreaSource(viewer);
+    renderArea();
     if (process.env.NODE_ENV === 'development') {
       globalThis.__moonViewer = viewer;
       globalThis.__moonHarness = {
@@ -840,6 +884,7 @@ export default function MoonMap() {
       for (let i = 0; i < layers.length; i += 1) unsubscribe(layers.get(i));
       viewer.destroy();
       viewerRef.current = null;
+      areaSourceRef.current = null;
       globalThis.__moonViewer = undefined;
       globalThis.__moonHarness = undefined;
     };
@@ -1041,6 +1086,40 @@ export default function MoonMap() {
     const hit = features.features.find((f) => f.properties.name === name);
     if (hit) selectFeature(hit);
   }, [features, selectFeature]);
+
+  // D11: the browsable areas. Same shape as the gazetteer below it — the map works
+  // without them (the control is empty and nothing is outlined), and a file that
+  // its own reader refuses is treated as a missing one rather than half-accepted,
+  // because a partial area list would read as a Moon with fewer areas on it.
+  useEffect(() => {
+    let alive = true;
+    fetch('/data/regions.json')
+      .then((r) => {
+        if (!r.ok) throw new Error(`regions.json HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((json: unknown) => {
+        if (!alive) return;
+        const result = parseViewRegions(json);
+        if (!result) {
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('[areas] regions.json refused; area selection is off');
+          }
+          return;
+        }
+        areasRef.current = result;
+        setAreas(result);
+        renderArea();
+      })
+      .catch((e: unknown) => {
+        if (alive && process.env.NODE_ENV === 'development') {
+          console.warn(`[areas] ${e instanceof Error ? e.message : String(e)}`);
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [renderArea]);
 
   // Labels ride in their own file; the map works without them (design §6
   // failure modes): search and labels disable, the map stays usable.
@@ -1277,6 +1356,9 @@ export default function MoonMap() {
             onSortChange={changeSort}
             onClearFilters={clearFilters}
             onChoose={goToFeature}
+            areas={areas}
+            selectedAreaId={selectedAreaId}
+            onAreaChoose={chooseArea}
           />
           <SearchBox
             features={features}

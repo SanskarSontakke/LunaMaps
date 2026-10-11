@@ -349,6 +349,9 @@ describe('the sidebar list names itself per sort direction', () => {
         onSortChange: () => {},
         onClearFilters: () => {},
         onChoose: () => {},
+        areas: null,
+        selectedAreaId: null,
+        onAreaChoose: () => {},
       }),
     );
 
@@ -389,6 +392,9 @@ describe('the sidebar list names itself per sort direction', () => {
         onSortChange: () => {},
         onClearFilters: () => {},
         onChoose: () => {},
+        areas: null,
+        selectedAreaId: null,
+        onAreaChoose: () => {},
       }),
     );
     expect(closed).toContain('aria-expanded="false"');
