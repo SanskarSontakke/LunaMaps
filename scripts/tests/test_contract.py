@@ -1,3 +1,4 @@
+import math
 import re
 import sys
 from pathlib import Path
@@ -285,3 +286,36 @@ def test_the_gate_reports_the_drift_it_rejected(tmp_path):
     message = str(excinfo.value)
     assert 'pxPerDegDeclared' in message
     assert re.search(r'\b3(\.\d+)? px\b', message), message
+
+
+# ---------------------------------------------------------------- grid ceilings --
+# Two gaps the whole-branch review named, closed together.
+#
+# 1. Nothing pinned `MAX_TOP_LEVEL` to a number. `src/lib/grid.ts` carries the same
+#    constant, and the golden vectors are generated from the maths, so lowering the
+#    Python ceiling to 9 and regenerating the vectors leaves every existing test
+#    green while the manifest's `levels` table quietly loses a row the client still
+#    asks for. A literal is the only assertion that cannot be regenerated away.
+#
+# 2. The delivered `levels[].mPerPx` was only ever compared against
+#    `grid.m_per_px` -- the same function that wrote it. That checks the pipeline,
+#    not the arithmetic, so a wrong radius or a swapped exponent moves the ground
+#    truth and the check with it. The expected values below are computed from
+#    first principles in this test, with the constants spelled out.
+
+def test_the_grid_ceiling_is_the_number_the_client_is_built_against():
+    import grid
+    assert grid.MAX_TOP_LEVEL == 10
+    assert grid.level_cols(10) == 2048 and grid.level_rows(10) == 1024
+
+
+def test_m_per_px_matches_an_independent_derivation():
+    import grid
+    RADIUS_M = 1_737_400.0            # Moon mean radius, IAU
+    ARC_M_PER_DEG = RADIUS_M * math.pi / 180.0   # 30,323.35
+    for L, expected in ((5, 333.14), (6, 166.57), (7, 83.29),
+                        (8, 41.64), (9, 20.82), (10, 10.41)):
+        px_per_deg = 512 * (2 ** (L + 1)) / 360.0
+        derived = ARC_M_PER_DEG / px_per_deg
+        assert abs(derived - expected) < 0.01, (L, derived, expected)
+        assert abs(grid.m_per_px(L) - derived) < 1e-6, L
