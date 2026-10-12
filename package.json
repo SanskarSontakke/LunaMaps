@@ -15,7 +15,9 @@
     "proof": ".venv\\Scripts\\python.exe scripts/proof.py",
     "test:js": "vitest run",
     "test:py": ".venv\\Scripts\\python.exe -m pytest scripts/tests -q",
-    "test": "vitest run && .venv\\Scripts\\python.exe -m pytest scripts/tests -q"
+    "test": "vitest run && .venv\\Scripts\\python.exe -m pytest scripts/tests -q",
+    "verify:bundle": "node scripts/verify_bundle.mjs",
+    "build:verify": "next build && node scripts/verify_bundle.mjs"
   },
   "dependencies": {
     "cesium": "^1.146.0",
