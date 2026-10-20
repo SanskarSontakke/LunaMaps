@@ -144,6 +144,13 @@ itself (deployment A plus a small committed subset).
   therefore about a dev artifact, and only the two absence-assertions in the new verdict
   noticed. Never treat a running server as evidence of a build: stop everything, `rm -rf .next`,
   `npm run build`, `next start`, then run the probe.
+- **`npm run verify:input` drives real input, and the camera is read the way a visitor
+  would.** `src/lib/keyboard.ts` is heavily unit-tested, but through a fake `window` that records
+  one callback -- that proves the switch table, not that a physical `keydown` reaches it. Twelve
+  CDP `Input.dispatch*` events against the shipped bundle moved the camera in the promised
+  direction every time, and Shift+ArrowUp measured 2.98x a plain ArrowUp (`FAST = 3`), which is
+  the measurement that says `event.shiftKey` survives the browser. The camera is read from
+  `location.hash`, so the check needs no dev-only global. Touch is not covered.
 - **`next dev` does not exercise any of this.** 498 unit tests and every browser probe passed
   against the dev server while the shipped bundle was dead, so a green `npm run test` is not
   evidence that a deployment works. Run `npm run build` and load the result before publishing.

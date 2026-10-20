@@ -172,6 +172,7 @@ npm run test    # vitest then pytest
 npm run proof   # Gate G2; reads public/tiles + public/data/features.json
 npm run build:verify   # next build, then parse-check every emitted client bundle
 PROD_PORT=3000 npm run verify:render   # drive `next start` with no dev harness at all
+PROD_PORT=3000 npm run verify:input    # twelve real wheel/drag/keyboard events, same bundle
 node scripts/g1_tiling_probe.mjs                        # Gate G1 criteria 3+4, headless
 .venv/Scripts/python.exe scripts/g2_geometry_probe.py   # G2 mis-registration tables
 .venv/Scripts/python.exe scripts/g2_geometry_probe.py --sources   # + source-vs-tile check
@@ -310,13 +311,27 @@ describes serves no imagery at all and is therefore outside that question.
     `__moonHarness.sceneMode()` and `#cesiumContainer`'s `data-mode`, and say out loud whether it moved.
   - **The three failure panels** of plan Task 15 and spec §4.4 have never been induced in a real tab;
     `verify-15.md` says so itself. Inducing the unbaked one means moving 87,380 git-ignored tiles.
-  - **Mouse drag, wheel zoom and keyboard pan** have never been driven as real input events.
+    Worth knowing before anyone schedules it: of the three, only two are reachable in a deployment.
+    The tile-failure counter is behind `process.env.NODE_ENV === 'development'` (`MoonMap.tsx:1415`)
+    because spec §4.4 asked for it "surfaced in a dev overlay" — so it is dev-only by design, and a
+    production probe can never see it.
+  - **~~Mouse drag, wheel zoom and keyboard pan have never been driven as real input events.~~
+    Closed 2026-10-21** with `npm run verify:input`: twelve real CDP `Input.dispatch*` events against
+    the production bundle, camera read from `location.hash` (no dev global involved). Wheel in/out
+    moved height both ways; a left-to-right drag moved longitude 20.1°; arrows panned N/S/E/W in the
+    directions the switch table promises; `+`/`-` zoomed; `q`/`e` rotated ±4.58°; and Shift+ArrowUp
+    measured 2.98x a plain ArrowUp, which is the only kind of evidence that `event.shiftKey` actually
+    reaches the handler rather than being reconstructed in a unit test. What this does not cover:
+    touch, and whether the pan feels right to a hand.
   - **The `±180°` strip and the poles as rendered pixels** are proven numerically
     (`tierA-check-transcript.txt`), not in an image; the polar hole above is 6.55% of the L5 grid.
-  - **The `ortho` overlay has never been looked at.** It is verified live over CDP - tiles-to-render,
-    request counts, frame cost, attach/detach, and the not-on-this-machine path - but every one of those
-    is a number, not a pixel. Nobody has judged whether a 10.4 m/px Kaguya box beside a 83 m/px WAC
-    surround looks like a feature or a fault. That is the first item for the Task 18 sweep.
+  - **The `ortho` overlay has been looked at now, and the verdict is split.** Deep zoom was viewed at
+    Tycho (relief-rich: the overlay reads as a genuine sharpening, ×1.70 contrast, ×2.93 detail) and
+    at the Apollo sites in both dev and the production bundle, where it reads as a darker, flatter
+    patch — mean 72.8 → 36.2 and tonal range 54 → 23 DN at identical framing — because a hillshade of
+    mare has nothing to shade. That is the product working as specified, not a seam defect, but it is
+    also the thing a first-time visitor will mistake for a bug, so it is documented as copy above.
+    The 10.4 m/px box meeting the 83 m/px surround was judged legible at the cratered sites.
   - **Frame rate and spec §4.5's whole performance budget** are unmeasured and largely unimplemented:
     no `maximumScreenSpaceError`, no request-concurrency cap, no latency or memory figures. The one
     exception is the overlay's cost, measured twice in `docs/.../ortho.ts`'s `minimumLevel` note:
@@ -353,8 +368,9 @@ describes serves no imagery at all and is therefore outside that question.
   `next build`. That last one paid for itself immediately: on the machine writing this line, a
   `next dev` run had clobbered `.next` underneath a live `next start`, so `:3000` was serving a page
   with dev globals in it while presenting as the shipped bundle. Still open, and named above: the
-  morph has never been seen to *animate*, the three failure panels have never been induced in a real
-  tab, and drag, wheel and keyboard have never been driven as real input events. The composited
+  morph has never been seen to *animate*, two of the three failure panels have never been induced in
+  a real tab (the third is dev-only by design), and touch input has never been driven — pointer drag,
+  wheel and every keyboard binding now have, at `npm run verify:input`. The composited
   captures behind those claims (`g3-*.png`, `ortho-shots/`) are screenshots and stay in the untracked
   `work/` scratch dir; `gate-G3-live.md` is the record. `verify-18.md` §3's Tier B decline was
   reversed on 2026-10-09 when `--top 7` shipped as a knowingly 1.2× upsample — that file keeps its

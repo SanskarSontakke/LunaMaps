@@ -18,6 +18,7 @@
     "test": "vitest run && .venv\\Scripts\\python.exe -m pytest scripts/tests -q",
     "verify:bundle": "node scripts/verify_bundle.mjs",
     "verify:render": "node scripts/verify_production.mjs",
+    "verify:input": "node scripts/verify_input.mjs",
     "build:verify": "next build && node scripts/verify_bundle.mjs"
   },
   "dependencies": {
