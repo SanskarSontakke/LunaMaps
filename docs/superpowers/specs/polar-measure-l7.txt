@@ -1,0 +1,40 @@
+Polar albedo hole in the delivered L5 `paper` grid -- the record behind the README
+"Known limits" bullet, re-measured independently from the JPEGs on 2026-10-20 and
+identical to the 2026-10-09 recount that superseded the pre-L7 numbers (6.6039%,
+5.8%, 7.4%). Read the same way `scripts/proof.py` reads a tile: `Image.open(...).convert('L')`,
+exact zeros, no threshold.
+
+    tiles              2,048, each 512x512, 64 columns x 32 rows
+    pixels             536,870,912
+    exact DN 0         35,183,101  = 6.5534% of the grid
+    concentrated       above |lat| 73 deg; 68 tiles are more than 50% black, all in the caps
+
+Per hemisphere (16 rows = 268,435,456 px):
+
+    north rows 0-15    15,494,996  = 5.77%
+    south rows 16-31   19,688,105  = 7.33%
+    (the two sum to 35,183,101, so nothing outside the caps is counted)
+
+Dense caps, as a share of one hemisphere -- the convention the bullet uses:
+
+    north rows 0-2     13,161,871  = 4.90% of the north hemisphere (26.2% of those rows)
+    south rows 29-31   16,029,589  = 5.97% of the south hemisphere (31.8% of those rows)
+    both caps over one hemisphere  = 10.9%
+
+That last line is where the retired "~10% of each hemisphere's disc" claim came from:
+10.9% divides BOTH caps by ONE hemisphere, which is not a per-disc statement, so the
+figure is dropped rather than corrected. No single measurement supports ~10% per disc.
+
+Per-row share of exact zeros (row = one of the 32 grid rows, 16,777,216 px):
+
+    0:48.0   1:19.4   2:11.0   3:5.6   4:2.7   5:1.6   6:1.2   7:0.9   8:0.6
+   23:0.8  24:1.2  25:1.6  26:2.6  27:4.6  28:9.3  29:17.8  30:24.2  31:53.5
+
+Source check (not the tiles): 13x13 windows at 0 deg E / +-89.5 deg in the WAC mosaic
+are 100.0% and 95.9% exact zeros, against 0.0% at the equator. The hole is upstream
+data, not a bake defect, and it is deliberately not muted: lifting black toward the
+paper base colour would fabricate albedo the source does not have.
+
+To re-measure: walk `public/tiles/paper/5/<x>/<y>.jpg` (the tree is gitignored, so this
+only runs where the bake has been), convert each to `L`, count pixels exactly equal to
+zero, and group by the row index in the filename.

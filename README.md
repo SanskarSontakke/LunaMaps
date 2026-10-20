@@ -106,6 +106,9 @@ nearly everywhere, and that is the correct answer rather than a broken layer. Th
 
 Ground sizes are `Δlon × 30,323.35 m × cos(mid-latitude)` and `Δlat × 30,323.35 m` —
 the cosine matters, and a table that forgot it overstates every wide box by up to 40%.
+The `tiles` column is per box and sums to 7,132; the store holds 7,106, because all 26
+of Apollo 15's tiles (4 at L8, 6 at L9, 16 at L10) already lie inside Rima Hadley's
+3° box. Baked once, billed twice in that column.
 
 **7,106 tiles total — 390 at L8, 1,404 at L9, 5,312 at L10 — 187,755,158 B.** The
 lander boxes are 0.5° on a side, about fifteen kilometres: roughly 1,460 px across at
@@ -126,7 +129,11 @@ zoom on. Measured on the composited frame at identical framing, overlay off agai
 
 **Contrast ×1.70, visible detail ×2.93, sharpness ×2.86**, and the tonal range nearly
 doubles. The readout moves from `L7 of L7` to `L10 of L10` and two imagery layers
-attach. Verified in the production bundle as well as dev, driven only by URL and click.
+attach. That table was measured in dev through the harness; in the **production**
+bundle the same URL-plus-click path reaches `L10 of L10` with zero console errors and
+no dev globals present (`npm run verify:render` asserts the hydration and picker half
+of that, and `scripts/tests/test_readme_deepzoom.py` re-derives every number in this
+section from the tile tree).
 
 **Two things that look like bugs and are not.**
 
@@ -137,7 +144,9 @@ attach. Verified in the production bundle as well as dev, driven only by URL and
 2. *Deep zoom looks dark and flat at the Apollo sites.* `ortho` is a **shaded-relief**
    product, and a hillshade of a flat mare is a uniform value. At Apollo 11 the source
    window measures mean 38.3, std 2.4 over 2048² px; the baked L10 tiles measure 38.0;
-   the rendered frame 35.6. Every stage is faithful to under one percent — the terrain
+   the rendered frame 35.6, and the production bundle's frame 36.2 — where the same
+   framing narrows the tonal range from 54 DN to 23 DN against the L7 base instead of
+   widening it. Every stage is faithful to under one percent — the terrain
    has no relief to show. Ortho std across the twelve boxes runs from 2.1 (Apollo 11,
    Mons Rümker 3.0) to **28.8 at Tycho**, so the sites worth visiting are the cratered
    highlands, not the maria. The control's own gloss says "shaded relief, not albedo"
@@ -161,6 +170,8 @@ file's declared pixel size against the canonical one: 303.23337750432864 vs 303.
 ```bash
 npm run test    # vitest then pytest
 npm run proof   # Gate G2; reads public/tiles + public/data/features.json
+npm run build:verify   # next build, then parse-check every emitted client bundle
+PROD_PORT=3000 npm run verify:render   # drive `next start` with no dev harness at all
 node scripts/g1_tiling_probe.mjs                        # Gate G1 criteria 3+4, headless
 .venv/Scripts/python.exe scripts/g2_geometry_probe.py   # G2 mis-registration tables
 .venv/Scripts/python.exe scripts/g2_geometry_probe.py --sources   # + source-vs-tile check
@@ -170,12 +181,15 @@ The probes print and always exit 0: diagnostics, not tests. `npm run proof` stil
 updating `albedoHistogram` and `geometryProof` in the tracked `public/tiles/manifest.json`, but since
 `334b6bb` it writes through `manifest.write_manifest` - the one writer this repo has for that artifact, which
 emits LF bytes plus a final newline - instead of `Path.write_text`, so it no longer re-typesets the whole
-tracked file to CRLF. It changes only those two keys: run on this tree it left `manifest.json` byte-identical
-(md5 `6b2c9c5558d54d6f399a7526b7408821` at the time of writing — it moves whenever the gate's numbers
-do, which is the point of pinning it) and `git status` empty, so the tree is dirtied only
-when the gate's numbers actually move. `npm run test` at this commit: vitest **503 passed / 26 files**, pytest
-**358 passed + 1 xfailed**, `npx tsc --noEmit` clean (291 passed / 18 files was the state after Task 17;
-222 / 178 at Task 17, 209 / 168 when Task 15 landed).
+tracked file to CRLF. It changes only those two keys: re-run on the tree recorded here it left
+`manifest.json` byte-identical,
+before and after md5 `ebc112adcd8281b99ea0b1ebea89f179`, and `git status` empty. The pin is not decorative — it
+moved once already, at `2a9da39`, when recording the top of the albedo distribution changed a gate number, and
+that is the only condition under which it should move. `npm run test` at this commit: vitest **503 passed / 26 files**,
+pytest **371 passed + 1 xfailed**, `npx tsc --noEmit` clean (358 was the pytest count until `0a1dd59` added the
+two contract pins, and 360 until `scripts/tests/test_readme_deepzoom.py` guarded this document's own numbers;
+291 passed / 18 files was the vitest state after Task 17, 222 / 178 at Task 17, 209 / 168 when
+Task 15 landed).
 
 **Gate G1** proves Cesium boots on self-hosted assets and that the geodetic `y` origin is what the bake
 writes: `row0north = 90.000°`, `row1north = 0°`, L1 grid `4 x 2`, L2 `8 x 4`, `tileWidth = 512`, radii
@@ -253,7 +267,8 @@ describes serves no imagery at all and is therefore outside that question.
   black, all of them in the caps. Sampling the source confirms it: 13x13 windows at 0°E /
   `±89.5°` are **100.0%** and **95.9%** exact zeros against 0.0% at the equator. Per hemisphere,
   recounted on 2026-10-09 over all 2,048 delivered tiles with the same read `scripts/proof.py`
-  uses (`Image.open(...).convert('L')`, `work/polar-measure-l7.txt`): the north's rows 0-15 hold
+  uses (`Image.open(...).convert('L')`, `docs/superpowers/specs/polar-measure-l7.txt`,
+  re-measured from the JPEGs on 2026-10-20 and identical): the north's rows 0-15 hold
   15,494,996 zero pixels of 268,435,456 = **5.77%**, the south's rows 16-31 hold 19,688,105 =
   **7.33%**, and the dense caps alone are **4.9%** of the north (rows 0-2) and **6.0%** of the
   south (rows 29-31). The per-row shares run 48.0 / 19.4 / 11.0 / 5.6 / 2.7% down the north and
@@ -277,8 +292,10 @@ describes serves no imagery at all and is therefore outside that question.
   containment test.
 - **The paper tint is decor.** Paper mode's warm cast is a CSS `sepia/saturate/contrast/brightness` filter plus a `#efe9dc` base colour: no hypsometric tints, contours, relief shading or elevation layer of any kind.
 - **Visually verified on 2026-10-08, and only partly.** `docs/superpowers/specs/gate-G3-live.md` §7
-  records a real Chrome pass with three images read by eye (`work/g3-globe-22000km.png`,
-  `g3-globe-hemisphere.png`, `g3-paper-flat.png`): the Moon is recognisable and correctly oriented,
+  records a real Chrome pass over three captures (`g3-globe-22000km.png`,
+  `g3-globe-hemisphere.png`, `g3-paper-flat.png` - read by eye, and listed there by name; like every
+  screenshot they sit in the untracked `work/` scratch dir, so the record is the citation, not the
+  image): the Moon is recognisable and correctly oriented,
   mare boundaries and Tycho's rays are legible, flat mode is a true equirectangular sheet with no
   visible seam. That pass found **five defects no test could see** - colour that renders grey, a paper
   tint with no warm shift, a default framing that put a ~110 px disc on a 564x786 canvas, landing-site
@@ -324,11 +341,21 @@ describes serves no imagery at all and is therefore outside that question.
   compile, and the only consumers of the emitted `--font-geist-*` variables were in
   `src/app/page.module.css`, which nothing imports, while `globals.css` sets `system-ui` stacks
   directly. The import is gone, which also removes the project's only build-time network egress;
-  `page.module.css` is now dead and should be deleted with the rest of the Task 18 sweep. Note
+  `page.module.css` was dead and is now deleted. Note
   what the original bullet admitted and this correction does not change: the offline failure was
   *inferred* from how `next/font/google` works, never observed, because no build in this repo's
   evidence has ever been run offline.
-- **Open:** Gate G3 (Task 18 sweep) is in progress — the deep-zoom layer now has its first
-  composited captures (`work/ortho-shots/`, recorded in `gate-G3-live.md`), and the filter
-  sidebar, framing regions and performance budget are being built on top of it. The Tier B
-  decision stands as declined.
+- **Gate G3, as far as it has gone.** Closed since this list was last written: the twelve deep-zoom
+  boxes, their per-level counts and their byte total are re-derived from the delivered tree by
+  `scripts/tests/test_readme_deepzoom.py`, which carries five mutations that must be caught so the
+  guard cannot pass vacuously; the polar bullet above was re-measured from the JPEGs on 2026-10-20
+  and is identical; and `npm run verify:render` now asserts the production render against a clean
+  `next build`. That last one paid for itself immediately: on the machine writing this line, a
+  `next dev` run had clobbered `.next` underneath a live `next start`, so `:3000` was serving a page
+  with dev globals in it while presenting as the shipped bundle. Still open, and named above: the
+  morph has never been seen to *animate*, the three failure panels have never been induced in a real
+  tab, and drag, wheel and keyboard have never been driven as real input events. The composited
+  captures behind those claims (`g3-*.png`, `ortho-shots/`) are screenshots and stay in the untracked
+  `work/` scratch dir; `gate-G3-live.md` is the record. `verify-18.md` §3's Tier B decline was
+  reversed on 2026-10-09 when `--top 7` shipped as a knowingly 1.2× upsample — that file keeps its
+  original wording because a dated log should not be quietly re-written.
