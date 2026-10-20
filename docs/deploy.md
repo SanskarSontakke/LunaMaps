@@ -117,8 +117,9 @@ itself (deployment A plus a small committed subset).
   and `proof` are operator commands against the local venv; `npm run build` does not call
   any of them.
 - `src/` contains no `http(s)://` string except an IAU link in a test, and three `fetch(`
-  calls, all of which resolve through `src/lib/tileSource.ts`. So the one build-time
-  network egress in the project is `next/font/google` in `src/app/layout.tsx`.
+  calls, all of which resolve through `src/lib/tileSource.ts`. There is no build-time
+  network egress left: the `next/font/google` import that used to sit in
+  `src/app/layout.tsx` is gone, along with the `page.module.css` that was its only reader.
 - **The production build is verified, and it needed fixing to get there.** `npm run build`
   compiled, linted and prerendered five static pages while the resulting app rendered a
   permanently empty page: one emitted chunk threw `SyntaxError: Octal escape sequences are
@@ -128,15 +129,28 @@ itself (deployment A plus a small committed subset).
   client build turns a NUL into a `\0` escape followed by a digit. `next.config.mjs` aliases
   that module to `false` for the client build, which is safe here because no `.spz` point
   cloud is ever loaded — and it is the reason a Vercel deploy of any commit before
-  `057884d` would have shown a blank page. `work/verify_production.mjs` is the check: it
-  drives `next start` with no dev harness available, and asserts hydration, the gazetteer
-  count, the area picker and 2,620 painted outline pixels.
+  `057884d` would have shown a blank page. `scripts/verify_production.mjs` is the check
+  (`npm run verify:render`): it drives `next start` over CDP with no dev harness available
+  and exits nonzero unless the sidebar hydrated with real gazetteer rows (1,585 of them),
+  the area picker populated from `regions.json`, selecting a region produced its copy,
+  `globalThis.__moonViewer` is *absent*, no `nextjs-portal` dev badge is in the DOM, and the
+  console is clean. It writes the frame to `work/prod-shots/`; the 2,620 painted outline
+  pixels were counted from that kind of capture once, in dev, and are not re-asserted here.
+- **A live `next dev` and a live `next start` share `.next`, and the one that started second
+  wins.** Found on 2026-10-20 while re-running the check above: `:3000` was a `next start`
+  process serving a page that had `__moonViewer` defined and the Next.js dev badge in the DOM,
+  because a dev run had overwritten `.next` underneath it — no `BUILD_ID`, 10 static chunks
+  instead of the build's 19. Every "verified in production" claim from that window was
+  therefore about a dev artifact, and only the two absence-assertions in the new verdict
+  noticed. Never treat a running server as evidence of a build: stop everything, `rm -rf .next`,
+  `npm run build`, `next start`, then run the probe.
 - **`next dev` does not exercise any of this.** 498 unit tests and every browser probe passed
   against the dev server while the shipped bundle was dead, so a green `npm run test` is not
   evidence that a deployment works. Run `npm run build` and load the result before publishing.
-- Verified in this repository as of writing: `npx tsc --noEmit` clean, `npx vitest run`
-  (498 passed / 25 files), `npm run test` (vitest then the 358-test pytest suite), and
-  `npm run build` + `next start` + the production probe above. `npm run build` has to be run
+- Verified in this repository as of writing: `npx tsc --noEmit` clean, `npm run test`
+  (**503 passed / 26 files** vitest, then **371 passed + 1 xfailed** pytest), `npm run build` +
+  `verify:bundle` (19 client bundles parse) + `next start` + `verify:render` PASS, and Gate G2
+  re-run leaving `public/tiles/manifest.json` byte-identical. `npm run build` has to be run
   with the dev server **stopped**: `next dev` and `next build` share `.next`, and building over
   a live dev server corrupts both (it produced `Cannot find module './897.js'` 500s and
   destroyed every CDP execution context for an hour of this session). That is a workflow
