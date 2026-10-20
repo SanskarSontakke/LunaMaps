@@ -82,6 +82,67 @@ byte table below is Tier A's measurement:
   a blend into `paper`; `public/tiles/ortho/**` is gitignored like every other tile, and the
   app now probes two tiles per level before it will offer the layer at all.
 
+## Deep zoom: what L8-L10 actually covers
+
+The single most misleading thing about this feature is that **almost none of the Moon
+has it.** `paper` and `photo` are global to L7, so the scale readout says `L7 of L7`
+nearly everywhere, and that is the correct answer rather than a broken layer. The
+`ortho` overlay exists only inside twelve small boxes:
+
+| box | west, south → east, north | ground size | tiles |
+|---|---|---|---|
+| `mare-orientale` | −99.670, −24.866 → −89.670, −14.866 | 285 × 303 km | 4,430 |
+| `mons-rumker` | −60.259, 38.623 → −56.259, 42.623 | 92 × 121 km | 750 |
+| `tycho` | −13.148, −44.702 → −9.283, −41.889 | 85 × 85 km | 529 |
+| `copernicus` | −21.682, 8.039 → −18.469, 11.208 | 96 × 96 km | 486 |
+| `rima-hadley` | 1.419, 24.117 → 4.419, 27.117 | 82 × 91 km | 439 |
+| `aristarchus` | −48.740, 22.480 → −46.240, 24.980 | 69 × 76 km | 337 |
+| `apollo-11` | 23.233, 0.424 → 23.733, 0.924 | 15.2 × 15.2 km | 22 |
+| `apollo-12` | −23.680, −3.270 → −23.180, −2.770 | 15.1 × 15.2 km | 29 |
+| `apollo-14` | −17.700, −3.890 → −17.200, −3.390 | 15.1 × 15.2 km | 29 |
+| `apollo-15` | 3.388, 25.799 → 3.888, 26.299 | 13.6 × 15.2 km | 26 |
+| `apollo-16` | 15.231, −9.226 → 15.731, −8.726 | 15.0 × 15.2 km | 26 |
+| `apollo-17` | 30.482, 19.935 → 30.982, 20.435 | 14.2 × 15.2 km | 29 |
+
+Ground sizes are `Δlon × 30,323.35 m × cos(mid-latitude)` and `Δlat × 30,323.35 m` —
+the cosine matters, and a table that forgot it overstates every wide box by up to 40%.
+
+**7,106 tiles total — 390 at L8, 1,404 at L9, 5,312 at L10 — 187,755,158 B.** The
+lander boxes are 0.5° on a side, about fifteen kilometres: roughly 1,460 px across at
+L10. Anyone panning the globe will fall off one within a second of zoom, which is why
+searching a name and letting the card fly there is the reliable way in.
+
+Resolution is **41.64 m/px at L8, 20.82 at L9, 10.41 at L10**, from a source that is
+7.4 m/px native, so L10 is a 1.4× upsample and L8-L10 are the only levels in the
+pyramid that are *not* an upsample of the 100 m/px WAC.
+
+**To see it:** `http://localhost:3000/#-11.2153/-43.2958/14000/globe/photo` with Deep
+zoom on. Measured on the composited frame at identical framing, overlay off against on:
+
+| | std | mean &#124;grad&#124; | Laplacian var | p2-p98 |
+|---|---|---|---|---|
+| L7 base | 25.4 | 2.839 | 2,459 | 98 DN |
+| L10 overlay | 43.3 | 8.308 | 7,037 | 183 DN |
+
+**Contrast ×1.70, visible detail ×2.93, sharpness ×2.86**, and the tonal range nearly
+doubles. The readout moves from `L7 of L7` to `L10 of L10` and two imagery layers
+attach. Verified in the production bundle as well as dev, driven only by URL and click.
+
+**Two things that look like bugs and are not.**
+
+1. *`L7 of L7` outside a box.* The availability gate refuses L8-L10 requests whose
+   tiles were never baked, so you keep the L7 base instead of an upsampled lie.
+   Measured: at 8 km outside any region, Cesium issued 33 requests and 28 were gated
+   before reaching the network, with zero tile errors.
+2. *Deep zoom looks dark and flat at the Apollo sites.* `ortho` is a **shaded-relief**
+   product, and a hillshade of a flat mare is a uniform value. At Apollo 11 the source
+   window measures mean 38.3, std 2.4 over 2048² px; the baked L10 tiles measure 38.0;
+   the rendered frame 35.6. Every stage is faithful to under one percent — the terrain
+   has no relief to show. Ortho std across the twelve boxes runs from 2.1 (Apollo 11,
+   Mons Rümker 3.0) to **28.8 at Tycho**, so the sites worth visiting are the cratered
+   highlands, not the maria. The control's own gloss says "shaded relief, not albedo"
+   for this reason, and it is never blended into `paper`.
+
 ## Grid contract, as measured
 
 `512 x 512` px tiles; level `L` has `2^(L+1)` columns x `2^L` rows; **row 0 is north** (`y` increases
