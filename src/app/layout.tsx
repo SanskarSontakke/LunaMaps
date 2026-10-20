@@ -12,9 +12,9 @@ import "./globals.css";
  * build-time network egress in the project: they fetched Geist at build time and
  * published `--font-geist-sans` / `--font-geist-mono`, which nothing in the app
  * reads. Every surface here is `system-ui` (`globals.css`'s `.ui`, `.ctl-search
- * input`, `.credit`, `.panel`), and the stylesheet that did reference the two
- * variables — `src/app/page.module.css`, the rest of the template — is imported by
- * no file under `src/`. `src/test/a11y.test.ts` pins both facts, so the font
+ * input`, `.credit`, `.panel`), and the template's `src/app/page.module.css` — the
+ * only stylesheet that read the two variables — was imported by no file under `src/`
+ * and is deleted. `src/test/a11y.test.ts` pins both facts, so the font
  * cannot come back as a "no visual change" claim nobody re-checked.
  */
 export const metadata: Metadata = {
